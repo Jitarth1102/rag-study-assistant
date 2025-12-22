@@ -26,17 +26,52 @@ class QdrantConfig(BaseModel):
     host: str = Field(default="localhost")
     port: int = Field(default=6333)
     collection_name: str = Field(default="rag_study")
+    url: str = Field(default="http://localhost:6333")
+    collection: str = Field(default="rag_chunks")
+    vector_size: int = Field(default=1536)
 
 
 class LoggingConfig(BaseModel):
     level: str = Field(default="INFO")
 
 
+class IngestConfig(BaseModel):
+    pdf_dpi: int = Field(default=200)
+    ocr_lang: str = Field(default="en")
+    max_chunk_chars: int = Field(default=2000)
+    min_chunk_chars: int = Field(default=200)
+    overlap_blocks: int = Field(default=2)
+
+
+class RetrievalConfig(BaseModel):
+    top_k: int = Field(default=8)
+
+
+class LLMConfig(BaseModel):
+    provider: str = Field(default="ollama")
+    model: str = Field(default="llama3.1:8b")
+    base_url: str = Field(default="http://127.0.0.1:11434")
+    temperature: float = Field(default=0.2)
+    timeout_s: int = Field(default=60)
+    chat_model: str = Field(default="gpt-4.1-mini")
+    embed_model: str = Field(default="text-embedding-3-small")
+
+
+class EmbeddingsConfig(BaseModel):
+    provider: str = Field(default="local")
+    model: str = Field(default="intfloat/multilingual-e5-small")
+    vector_size: int = Field(default=384)
+
+
 class Settings(BaseModel):
     app: AppConfig
     database: DatabaseConfig
-    qdrant: QdrantConfig
-    logging: LoggingConfig
+    qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    ingest: IngestConfig = Field(default_factory=IngestConfig)
+    retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
+    embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
 
 
 DEFAULT_CONFIG_PATH = Path("config/default.yaml")
@@ -59,18 +94,34 @@ def _apply_env_overrides(data: dict) -> dict:
         ("qdrant", "host"): os.getenv("QDRANT_HOST"),
         ("qdrant", "port"): os.getenv("QDRANT_PORT"),
         ("qdrant", "collection_name"): os.getenv("QDRANT_COLLECTION"),
+        ("qdrant", "url"): os.getenv("QDRANT_URL"),
+        ("qdrant", "vector_size"): os.getenv("QDRANT_VECTOR_SIZE"),
+        ("llm", "provider"): os.getenv("LLM_PROVIDER"),
+        ("llm", "model"): os.getenv("LLM_MODEL"),
+        ("llm", "base_url"): os.getenv("LLM_BASE_URL"),
+        ("llm", "temperature"): os.getenv("LLM_TEMPERATURE"),
+        ("llm", "timeout_s"): os.getenv("LLM_TIMEOUT_S"),
+        ("embeddings", "provider"): os.getenv("EMBEDDINGS_PROVIDER"),
+        ("embeddings", "model"): os.getenv("EMBEDDINGS_MODEL"),
+        ("embeddings", "vector_size"): os.getenv("EMBEDDINGS_VECTOR_SIZE"),
     }
     for (section, key), value in overrides.items():
         if value is None:
             continue
         if section not in data:
             data[section] = {}
-        if key == "port":
+        if key in {"port", "vector_size"}:
             try:
                 data[section][key] = int(value)
                 continue
             except ValueError:
                 # keep original if conversion fails
+                pass
+        if key in {"temperature", "timeout_s"}:
+            try:
+                data[section][key] = float(value) if key == "temperature" else int(value)
+                continue
+            except ValueError:
                 pass
         data[section][key] = value
     return data
@@ -93,4 +144,14 @@ def load_config(path: Optional[Path] = None) -> Settings:
     return settings
 
 
-__all__ = ["Settings", "AppConfig", "DatabaseConfig", "QdrantConfig", "LoggingConfig", "load_config"]
+__all__ = [
+    "Settings",
+    "AppConfig",
+    "DatabaseConfig",
+    "QdrantConfig",
+    "LoggingConfig",
+    "IngestConfig",
+    "RetrievalConfig",
+    "LLMConfig",
+    "load_config",
+]

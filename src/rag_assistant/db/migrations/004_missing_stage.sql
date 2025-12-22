@@ -1,0 +1,1 @@
+-- No-op migration placeholder for missing stage handling (stage is free-text).

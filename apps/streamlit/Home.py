@@ -18,7 +18,7 @@ sidebar_subject = render_sidebar()
 
 st.subheader("Create a new subject")
 with st.form(key="create_subject_form"):
-    new_subject_name = st.text_input("Subject name", placeholder="Machine Learning Fall 2025")
+    new_subject_name = st.text_input("Subject name", placeholder="Enter Subject name here")
     submitted = st.form_submit_button("Create subject")
     if submitted:
         try:
