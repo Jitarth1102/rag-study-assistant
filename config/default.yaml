@@ -1,0 +1,16 @@
+app:
+  name: rag-study-assistant
+  environment: development
+  data_root: ./data
+  logs_dir: ./logs
+
+database:
+  sqlite_path: ./data/db/rag_assistant.db
+
+qdrant:
+  host: localhost
+  port: 6333
+  collection_name: rag_study
+
+logging:
+  level: INFO
