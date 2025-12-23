@@ -23,3 +23,11 @@ def test_init_db_creates_tables(tmp_path: Path):
         "schema_migrations",
     }
     assert expected.issubset(tables)
+
+
+def test_init_db_idempotent(tmp_path: Path):
+    db_path = tmp_path / "db" / "idem.db"
+    init_db(db_path)
+    # run again should not raise or corrupt
+    init_db(db_path)
+    assert db_path.exists()

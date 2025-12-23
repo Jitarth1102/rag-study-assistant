@@ -8,8 +8,18 @@ from rag_assistant.services import subject_service
 from rag_assistant.ui import render_sidebar, session_state
 
 st.set_page_config(page_title="RAG Study Assistant", layout="wide")
-config = load_config()
-init_db(Path(config.database.sqlite_path))
+try:
+    config = load_config()
+except Exception as exc:  # pragma: no cover - UI guard
+    st.error(f"Failed to load configuration: {type(exc).__name__}: {exc}")
+    st.stop()
+
+try:
+    init_db(Path(config.database.sqlite_path))
+except Exception as exc:  # pragma: no cover - UI guard
+    st.error(f"Database initialization failed: {type(exc).__name__}: {exc}")
+    st.info("Ensure the database path is writable and not locked.")
+    st.stop()
 
 st.title("RAG Study Assistant")
 st.write("Use subjects to organize study materials, uploads, and chat context.")

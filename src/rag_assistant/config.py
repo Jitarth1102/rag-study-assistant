@@ -50,6 +50,7 @@ class RetrievalConfig(BaseModel):
     top_k: int = Field(default=6)
     neighbor_window: int = Field(default=1)
     max_neighbor_chunks: int = Field(default=12)
+    min_score: float = Field(default=0.0)
 
 
 class LLMConfig(BaseModel):
@@ -115,6 +116,7 @@ def _apply_env_overrides(data: dict) -> dict:
         ("ingest", "tessdata_dir"): os.getenv("TESSDATA_DIR"),
         ("retrieval", "neighbor_window"): os.getenv("RETRIEVAL_NEIGHBOR_WINDOW"),
         ("retrieval", "max_neighbor_chunks"): os.getenv("RETRIEVAL_MAX_NEIGHBOR_CHUNKS"),
+        ("retrieval", "min_score"): os.getenv("RETRIEVAL_MIN_SCORE"),
     }
     for (section, key), value in overrides.items():
         if value is None:
@@ -128,9 +130,14 @@ def _apply_env_overrides(data: dict) -> dict:
             except ValueError:
                 # keep original if conversion fails
                 pass
-        if key in {"temperature", "timeout_s"}:
+        if key in {"temperature", "timeout_s", "min_score"}:
             try:
-                data[section][key] = float(value) if key == "temperature" else int(value)
+                if key in {"temperature"}:
+                    data[section][key] = float(value)
+                elif key == "timeout_s":
+                    data[section][key] = int(value)
+                else:
+                    data[section][key] = float(value)
                 continue
             except ValueError:
                 pass

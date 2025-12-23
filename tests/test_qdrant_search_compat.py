@@ -30,7 +30,7 @@ def test_search_path_uses_search():
 
 def test_search_path_uses_query_points():
     point = {"id": "2", "score": 0.8, "payload": {"b": 2}}
-    client = DummyClientQueryPoints([point])
+    client = DummyClientQueryPoints({"result": {"points": [point]}})
     res = search_points(client, "col", [0.1], 5)
     assert len(res) == 1
     assert res[0].id == "2"

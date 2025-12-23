@@ -16,6 +16,7 @@ def render_chat(subject_id: str):
     user_input = st.text_input("Ask a question")
     citations = []
     context_expanded = st.session_state.get("last_context_expanded", 0)
+    last_debug = st.session_state.get("last_retrieval_debug")
     if st.button("Send") and user_input:
         session_state.add_message("user", user_input)
         response = chat_service.ask(subject_id=subject_id, question=user_input)
@@ -23,6 +24,7 @@ def render_chat(subject_id: str):
         session_state.add_message("assistant", response["answer"])
         context_expanded = response.get("context_expanded", 0) or 0
         st.session_state["last_context_expanded"] = context_expanded
+        st.session_state["last_retrieval_debug"] = response.get("debug")
         st.success("Response received")
 
     for message in messages:
@@ -32,5 +34,13 @@ def render_chat(subject_id: str):
 
     if context_expanded:
         st.caption(f"Context expanded: +{context_expanded} neighbor chunks")
+
+    if st.checkbox("Show retrieval debug", value=False):
+        debug_data = st.session_state.get("last_retrieval_debug")
+        if debug_data:
+            with st.expander("Retrieval debug"):
+                st.json(debug_data)
+        else:
+            st.info("No retrieval debug data available yet.")
 
     return citations

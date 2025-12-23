@@ -2,19 +2,44 @@
 
 from __future__ import annotations
 
+import inspect
+import os
+from pathlib import Path
 from typing import List
 from types import SimpleNamespace
+import logging
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
 from rag_assistant.config import load_config
 from rag_assistant.vectorstore.point_id import make_point_uuid
+from rag_assistant.db.sqlite import execute
+
+logger = logging.getLogger(__name__)
 
 
-def _normalize_points(points) -> list:
+def _extract_points(result) -> list:
+    if result is None:
+        return []
+    res = result
+    if isinstance(res, dict) and "result" in res:
+        res = res["result"]
+    if hasattr(res, "result"):
+        res = res.result
+    if isinstance(res, dict) and "points" in res:
+        res = res["points"]
+    if hasattr(res, "points"):
+        res = res.points
+    if isinstance(res, (list, tuple)):
+        return list(res)
+    return [res]
+
+
+def _normalize_points(result) -> list:
+    points = _extract_points(result)
     normalized = []
-    for pt in points or []:
+    for idx, pt in enumerate(points):
         payload = getattr(pt, "payload", None)
         score = getattr(pt, "score", None)
         pid = getattr(pt, "id", None)
@@ -22,6 +47,17 @@ def _normalize_points(points) -> list:
             payload = pt.get("payload", payload)
             score = pt.get("score", score)
             pid = pt.get("id", pid)
+        if payload is None:
+            payload = {}
+        if os.getenv("QDRANT_DEBUG") and idx == 0:
+            logger.info(
+                "Qdrant raw hit debug",
+                extra={
+                    "type": type(pt).__name__,
+                    "attrs": [a for a in dir(pt) if not a.startswith("_")] if not isinstance(pt, dict) else list(pt.keys()),
+                    "payload_keys": list(payload.keys()) if isinstance(payload, dict) else [],
+                },
+            )
         normalized.append(SimpleNamespace(id=pid, score=score, payload=payload))
     return normalized
 
@@ -29,22 +65,36 @@ def _normalize_points(points) -> list:
 def search_points(client, collection_name: str, vector: list[float], limit: int, *, query_filter=None, with_payload: bool = True):
     """Compatibility wrapper for different qdrant-client APIs."""
     if hasattr(client, "search"):
-        res = client.search(
-            collection_name=collection_name,
-            query_vector=vector,
-            limit=limit,
-            with_payload=with_payload,
-            query_filter=query_filter,
-        )
+        try:
+            res = client.search(
+                collection_name=collection_name,
+                query_vector=vector,
+                limit=limit,
+                with_payload=with_payload,
+                query_filter=query_filter,
+            )
+        except TypeError:
+            # older clients use "filter"
+            res = client.search(
+                collection_name=collection_name,
+                query_vector=vector,
+                limit=limit,
+                with_payload=with_payload,
+                filter=query_filter,
+            )
         return _normalize_points(res)
     if hasattr(client, "query_points"):
-        res = client.query_points(
-            collection_name=collection_name,
-            query=vector,
-            limit=limit,
-            with_payload=with_payload,
-            query_filter=query_filter,
-        )
+        sig = inspect.signature(client.query_points)
+        filter_key = "query_filter" if "query_filter" in sig.parameters else "filter"
+        query_key = "query_vector" if "query_vector" in sig.parameters else "query"
+        kwargs = {
+            "collection_name": collection_name,
+            query_key: vector,
+            "limit": limit,
+            "with_payload": with_payload,
+            filter_key: query_filter,
+        }
+        res = client.query_points(**kwargs)
         return _normalize_points(res)
     raise RuntimeError("Unsupported Qdrant client version: missing search/query_points")
 
@@ -56,6 +106,7 @@ class QdrantStore:
         self.client = QdrantClient(url=cfg.qdrant.url, api_key=None)
         self.collection = cfg.qdrant.collection
         self.vector_size = cfg.embeddings.vector_size if hasattr(cfg, "embeddings") else cfg.qdrant.vector_size
+        self.db_path = Path(cfg.database.sqlite_path)
         self.ensure_collection()
 
     def get_collection_point_count(self) -> int:
@@ -106,22 +157,79 @@ class QdrantStore:
             points=qmodels.Batch(ids=ids, vectors=vectors, payloads=payloads),
         )
 
-    def search(self, vector: List[float], subject_id: str, limit: int) -> List[dict]:
-        res = search_points(
-            self.client,
-            collection_name=self.collection,
-            vector=vector,
-            limit=limit,
-            query_filter=qmodels.Filter(
-                must=[qmodels.FieldCondition(key="subject_id", match=qmodels.MatchValue(value=subject_id))]
-            ),
+    def _hydrate_payload(self, payload: dict | None) -> dict:
+        payload = payload.copy() if payload else {}
+        if payload.get("text"):
+            return payload
+        chunk_id = payload.get("chunk_id")
+        if chunk_id:
+            row = execute(
+                self.db_path,
+                "SELECT text, page_num, asset_id, subject_id, bbox_json, start_block, end_block FROM chunks WHERE chunk_id = ?;",
+                (chunk_id,),
+                fetchone=True,
+            )
+            if row:
+                payload.setdefault("text", row.get("text"))
+                payload.setdefault("page_num", row.get("page_num"))
+                payload.setdefault("asset_id", row.get("asset_id"))
+                payload.setdefault("subject_id", row.get("subject_id"))
+                payload.setdefault("bbox_json", row.get("bbox_json"))
+                payload.setdefault("start_block", row.get("start_block"))
+                payload.setdefault("end_block", row.get("end_block"))
+                payload.setdefault("page_num", row.get("page_num"))
+        return payload
+
+    def search(self, vector: List[float], subject_id: str | None, limit: int) -> List[dict]:
+        def _search(filter_obj):
+            return search_points(
+                self.client,
+                collection_name=self.collection,
+                vector=vector,
+                limit=limit,
+                query_filter=filter_obj,
+                with_payload=True,
+            )
+
+        filter_obj = (
+            qmodels.Filter(must=[qmodels.FieldCondition(key="subject_id", match=qmodels.MatchValue(value=subject_id))])
+            if subject_id
+            else None
         )
-        hits = []
-        for point in res:
-            payload = point.payload or {}
-            payload["score"] = point.score
-            payload["id"] = point.id
-            hits.append(payload)
+        res = _search(filter_obj)
+
+        def _process(res_points):
+            hits_local = []
+            for point in res_points:
+                raw_payload = getattr(point, "payload", {}) or {}
+                if not isinstance(raw_payload, dict):
+                    try:
+                        raw_payload = dict(raw_payload)  # type: ignore[arg-type]
+                    except Exception:
+                        raw_payload = {}
+                payload = self._hydrate_payload(raw_payload)
+                payload.setdefault("chunk_id", raw_payload.get("chunk_id"))
+                payload.setdefault("page_num", raw_payload.get("page_num"))
+                payload.setdefault("asset_id", raw_payload.get("asset_id"))
+                payload.setdefault("subject_id", raw_payload.get("subject_id"))
+                chunk_id = payload.get("chunk_id")
+                if not chunk_id:
+                    logger.warning("Dropping Qdrant hit without chunk_id", extra={"point_id": getattr(point, "id", None)})
+                    continue
+                if not payload.get("text"):
+                    payload = self._hydrate_payload(payload)
+                if not payload.get("text") or payload.get("page_num") is None:
+                    logger.warning("Dropping Qdrant hit missing text/page_num after hydration", extra={"chunk_id": chunk_id})
+                    continue
+                payload["score"] = payload.get("score", getattr(point, "score", None))
+                payload["id"] = getattr(point, "id", None)
+                hits_local.append(payload)
+            return hits_local
+
+        hits = _process(res)
+        if not hits and subject_id:
+            retry_res = _search(None)
+            hits = _process(retry_res)
         return hits
 
     def delete_by_asset_id(self, asset_id: str) -> None:
@@ -143,4 +251,4 @@ class QdrantStore:
             raise RuntimeError(f"Could not reach Qdrant at {self.cfg.qdrant.url}: {exc}")
 
 
-__all__ = ["QdrantStore", "search_points"]
+__all__ = ["QdrantStore", "search_points", "_normalize_points"]

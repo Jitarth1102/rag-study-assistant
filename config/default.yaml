@@ -32,6 +32,7 @@ retrieval:
   top_k: 6
   neighbor_window: 1
   max_neighbor_chunks: 12
+  min_score: 0.0
 
 llm:
   provider: "ollama"
