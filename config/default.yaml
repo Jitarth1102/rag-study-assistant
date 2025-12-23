@@ -19,14 +19,19 @@ logging:
   level: INFO
 
 ingest:
+  ocr_engine: "tesseract"
   pdf_dpi: 200
-  ocr_lang: "en"
+  ocr_lang: "eng"
   max_chunk_chars: 2000
   min_chunk_chars: 200
   overlap_blocks: 2
+  tesseract_cmd: "/opt/homebrew/bin/tesseract"
+  tessdata_dir: "/opt/homebrew/share/tessdata"
 
 retrieval:
-  top_k: 8
+  top_k: 6
+  neighbor_window: 1
+  max_neighbor_chunks: 12
 
 llm:
   provider: "ollama"

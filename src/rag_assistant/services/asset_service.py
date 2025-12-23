@@ -114,9 +114,18 @@ def list_assets(subject_id: str) -> List[dict]:
     return execute(_db_path(), sql, (subject_id,), fetchall=True) or []
 
 
-def upsert_index_status(asset_id: str, stage: str, error: str | None = None) -> None:
-    sql = "INSERT INTO asset_index_status (asset_id, stage, updated_at, error) VALUES (?, ?, ?, ?) ON CONFLICT(asset_id) DO UPDATE SET stage=excluded.stage, updated_at=excluded.updated_at, error=excluded.error;"
-    execute(_db_path(), sql, (asset_id, stage, time.time(), error))
+def upsert_index_status(asset_id: str, stage: str, error: str | None = None, ocr_engine: str | None = None, warning: str | None = None) -> None:
+    sql = """
+    INSERT INTO asset_index_status (asset_id, stage, updated_at, error, ocr_engine, warning)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(asset_id) DO UPDATE SET
+      stage=excluded.stage,
+      updated_at=excluded.updated_at,
+      error=excluded.error,
+      ocr_engine=excluded.ocr_engine,
+      warning=excluded.warning;
+    """
+    execute(_db_path(), sql, (asset_id, stage, time.time(), error, ocr_engine, warning))
     # mirror to assets.status for quick UI reads
     execute(_db_path(), "UPDATE assets SET status = ? WHERE asset_id = ?;", (stage, asset_id))
 

@@ -41,10 +41,15 @@ class IngestConfig(BaseModel):
     max_chunk_chars: int = Field(default=2000)
     min_chunk_chars: int = Field(default=200)
     overlap_blocks: int = Field(default=2)
+    ocr_engine: str = Field(default="auto")
+    tesseract_cmd: str = Field(default="")
+    tessdata_dir: str = Field(default="")
 
 
 class RetrievalConfig(BaseModel):
-    top_k: int = Field(default=8)
+    top_k: int = Field(default=6)
+    neighbor_window: int = Field(default=1)
+    max_neighbor_chunks: int = Field(default=12)
 
 
 class LLMConfig(BaseModel):
@@ -96,6 +101,7 @@ def _apply_env_overrides(data: dict) -> dict:
         ("qdrant", "collection_name"): os.getenv("QDRANT_COLLECTION"),
         ("qdrant", "url"): os.getenv("QDRANT_URL"),
         ("qdrant", "vector_size"): os.getenv("QDRANT_VECTOR_SIZE"),
+        ("retrieval", "top_k"): os.getenv("RETRIEVAL_TOP_K"),
         ("llm", "provider"): os.getenv("LLM_PROVIDER"),
         ("llm", "model"): os.getenv("LLM_MODEL"),
         ("llm", "base_url"): os.getenv("LLM_BASE_URL"),
@@ -104,13 +110,18 @@ def _apply_env_overrides(data: dict) -> dict:
         ("embeddings", "provider"): os.getenv("EMBEDDINGS_PROVIDER"),
         ("embeddings", "model"): os.getenv("EMBEDDINGS_MODEL"),
         ("embeddings", "vector_size"): os.getenv("EMBEDDINGS_VECTOR_SIZE"),
+        ("ingest", "ocr_engine"): os.getenv("OCR_ENGINE"),
+        ("ingest", "tesseract_cmd"): os.getenv("TESSERACT_CMD"),
+        ("ingest", "tessdata_dir"): os.getenv("TESSDATA_DIR"),
+        ("retrieval", "neighbor_window"): os.getenv("RETRIEVAL_NEIGHBOR_WINDOW"),
+        ("retrieval", "max_neighbor_chunks"): os.getenv("RETRIEVAL_MAX_NEIGHBOR_CHUNKS"),
     }
     for (section, key), value in overrides.items():
         if value is None:
             continue
         if section not in data:
             data[section] = {}
-        if key in {"port", "vector_size"}:
+        if key in {"port", "vector_size", "top_k", "neighbor_window", "max_neighbor_chunks"}:
             try:
                 data[section][key] = int(value)
                 continue

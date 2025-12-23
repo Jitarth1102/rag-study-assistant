@@ -46,7 +46,7 @@ def test_pipeline_progression(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         def upsert_chunks(self, vectors, payloads, ids):
             return None
 
-    monkeypatch.setattr(pipeline, "get_ocr_engine", lambda lang="en": (DummyOCR(), None))
+    monkeypatch.setattr(pipeline, "get_ocr_engine", lambda lang="en", config=None: (DummyOCR(), None, "dummy"))
     monkeypatch.setattr(pipeline, "Embedder", DummyEmbedder)
     monkeypatch.setattr(pipeline, "QdrantStore", DummyStore)
 

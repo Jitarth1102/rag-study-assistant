@@ -22,6 +22,8 @@ Requires-Dist: sentence-transformers>=2.7.0
 Requires-Dist: torch>=2.2.0
 Requires-Dist: transformers>=4.40.0
 Requires-Dist: huggingface-hub>=0.23.0
+Requires-Dist: pytesseract>=0.3.10
+Requires-Dist: pillow>=10.3.0
 Provides-Extra: dev
 Requires-Dist: pytest>=7.4; extra == "dev"
 Requires-Dist: ruff>=0.5.0; extra == "dev"
@@ -59,6 +61,20 @@ Local-first multimodal RAG study assistant. This step provides a runnable skelet
 - CLI includes a `subjects` helper to list/create subjects: `uv run python -m rag_assistant subjects --create "My Course"`.
 - Indexing pipeline (PDF/images) runs from the Upload page via **Index new uploads**. It renders pages, runs PaddleOCR, chunks text, embeds, and pushes to Qdrant. Qdrant should be running locally (see `make qdrant`).
 - Chat page performs notes-only retrieval QA; set `OPENAI_API_KEY` (and optionally `OPENAI_BASE_URL`) for embeddings/LLM.
+
+### Reset a single asset (dev/debug)
+Use this to clean up generated artifacts for one asset (e.g., re-index after OCR/debugging):
+```bash
+./scripts/reset_asset.sh <asset_id>
+```
+This keeps the raw upload but removes derived pages/OCR/chunks, resets DB status, and best-effort deletes Qdrant vectors.
+
+### Reset all assets (dev/debug)
+To reset indexing outputs for all assets in the DB (keeping raw uploads):
+```bash
+./scripts/reset_all_assets.sh
+```
+You can also run via CLI: `uv run python -m rag_assistant reset-all`.
 
 ## Qdrant
 

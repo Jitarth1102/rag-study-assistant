@@ -14,7 +14,7 @@ class RejectPredictOCR:
 
 class BadOCR:
     def __init__(self, lang="en"):
-        raise TypeError("__init__() got an unexpected keyword argument 'cls'")
+        raise RuntimeError("fail init")
 
 
 def test_paddle_wrapper_does_not_pass_cls(monkeypatch):
@@ -25,7 +25,22 @@ def test_paddle_wrapper_does_not_pass_cls(monkeypatch):
 
 
 def test_factory_fallback_on_incompatible(monkeypatch):
-    monkeypatch.setattr(paddle_module, "PaddleOCR", BadOCR)
-    engine, warning = get_ocr_engine()
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    class DummyCfg:
+        class Ingest:
+            ocr_engine = "auto"
+            tesseract_cmd = ""
+            tessdata_dir = ""
+            ocr_lang = "eng"
+
+        ingest = Ingest()
+
+    monkeypatch.setattr("rag_assistant.ingest.ocr.factory.load_config", lambda: DummyCfg())
+    monkeypatch.setattr("rag_assistant.ingest.ocr.factory.PaddleOCREngine", boom)
+    monkeypatch.setattr("rag_assistant.ingest.ocr.factory.TesseractOCREngine", lambda *a, **k: StubOCREngine())
+    engine, warning, engine_name = get_ocr_engine()
     # factory should at least return a fallback engine (tesseract or stub)
     assert warning is not None
+    assert engine_name in {"tesseract", "stub"}

@@ -43,12 +43,33 @@ def has_column(db_path: Path, table: str, column: str) -> bool:
 
 
 def ensure_chunks_columns(db_path: Path) -> None:
-    """Ensure required columns exist on chunks table; add if missing."""
-    required_cols = ["asset_id", "subject_id", "page_num", "start_block", "end_block", "bbox_json"]
+    """Ensure required columns exist on chunks table; add/backfill if missing."""
+    required_cols = ["chunk_id", "asset_id", "subject_id", "page_num", "start_block", "end_block", "bbox_json", "created_at"]
+    added_chunk_id = False
     for col in required_cols:
         if not has_column(db_path, "chunks", col):
             with get_connection(db_path) as conn:
                 conn.execute(f"ALTER TABLE chunks ADD COLUMN {col} TEXT;")
+                conn.commit()
+            if col == "chunk_id":
+                added_chunk_id = True
+    if added_chunk_id:
+        with get_connection(db_path) as conn:
+            conn.execute("UPDATE chunks SET chunk_id = printf('%s:%s:%s', IFNULL(asset_id,''), IFNULL(page_num,''), rowid) WHERE chunk_id IS NULL OR chunk_id = '' ;")
+            conn.commit()
+    # indexes
+    with get_connection(db_path) as conn:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_chunk_id ON chunks(chunk_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_subject_asset_page ON chunks(subject_id, asset_id, page_num);")
+        conn.commit()
+
+
+def ensure_asset_status_columns(db_path: Path) -> None:
+    required_cols = ["ocr_engine", "warning"]
+    for col in required_cols:
+        if not has_column(db_path, "asset_index_status", col):
+            with get_connection(db_path) as conn:
+                conn.execute(f"ALTER TABLE asset_index_status ADD COLUMN {col} TEXT;")
                 conn.commit()
 
 
@@ -83,8 +104,9 @@ def apply_migrations(db_path: Path) -> None:
             conn.executescript(sql)
             conn.execute("INSERT OR REPLACE INTO schema_migrations (id, applied_at) VALUES (?, strftime('%s','now'));", (mig_id,))
             conn.commit()
-    # Ensure chunks columns even if migration file missing
+    # Ensure columns even if migration file missing
     ensure_chunks_columns(db_path)
+    ensure_asset_status_columns(db_path)
 
 
 def delete_asset_dependent_rows(db_path: Path, asset_id: str) -> None:

@@ -7,8 +7,10 @@ import time
 from pathlib import Path
 from typing import Dict, List
 
+import logging
+
 from rag_assistant.config import load_config
-from rag_assistant.db.sqlite import execute
+from rag_assistant.db.sqlite import execute, ensure_chunks_columns
 from rag_assistant.ingest.chunking.layout_chunker import chunk_ocr_blocks, write_chunks_jsonl
 from rag_assistant.ingest.ocr.paddle import analyze_ocr_stats, save_ocr_json
 from rag_assistant.ingest.ocr.factory import get_ocr_engine
@@ -17,8 +19,10 @@ from rag_assistant.ingest.render.pdf_to_images import render_pdf_to_images
 from rag_assistant.retrieval.embedder import Embedder
 from rag_assistant.retrieval.vector_store.qdrant import QdrantStore
 from rag_assistant.services import asset_service
+from rag_assistant.vectorstore.point_id import make_point_uuid
 
 STAGE_ORDER = ["stored", "rendered", "ocr_done", "chunked", "embedded", "indexed", "missing", "failed"]
+logger = logging.getLogger(__name__)
 
 
 def _should_run(current_stage: str | None, target_stage: str) -> bool:
@@ -32,8 +36,8 @@ def _should_run(current_stage: str | None, target_stage: str) -> bool:
         return True
 
 
-def _set_stage(asset_id: str, stage: str, error: str | None = None) -> None:
-    asset_service.upsert_index_status(asset_id, stage, error)
+def _set_stage(asset_id: str, stage: str, error: str | None = None, ocr_engine: str | None = None, warning: str | None = None) -> None:
+    asset_service.upsert_index_status(asset_id, stage, error, ocr_engine=ocr_engine, warning=warning)
 
 
 def _insert_page_records(asset_id: str, pages: List[Dict]) -> None:
@@ -62,6 +66,7 @@ def _insert_ocr_record(asset_id: str, page_num: int, ocr_path: Path, stats: dict
 
 
 def _upsert_chunks(chunks: List[dict]) -> None:
+    ensure_chunks_columns(asset_service.get_db_path())
     for chunk in chunks:
         execute(
             asset_service.get_db_path(),
@@ -111,17 +116,30 @@ def process_asset(subject_id: str, asset: dict, config=None) -> None:
             pages = pages_rows
 
         if _should_run(current_stage, "ocr_done"):
-            ocr_engine, ocr_warning = get_ocr_engine(lang=cfg.ingest.ocr_lang)
+            ocr_engine, ocr_warning, ocr_engine_name = get_ocr_engine(lang=cfg.ingest.ocr_lang, config=cfg)
             for page in pages:
                 page_num = page["page_num"] if isinstance(page, dict) else page.get("page_num")
                 image_path = page["image_path"] if isinstance(page, dict) else page.get("image_path")
                 ocr_json = ocr_engine.ocr_page(image_path, page_num)
+                blocks = ocr_json.get("blocks", [])
+                chars = sum(len(b.get("text", "")) for b in blocks)
+                logger.info(
+                    "OCR page processed",
+                    extra={
+                        "asset_id": asset_id,
+                        "page_num": page_num,
+                        "ocr_engine": ocr_engine_name,
+                        "blocks": len(blocks),
+                        "chars": chars,
+                    },
+                )
                 ocr_path = save_ocr_json(ocr_json, asset_id, ocr_dir, page_num)
                 stats = analyze_ocr_stats(ocr_json)
+                if not ocr_json.get("blocks"):
+                    stats["needs_caption"] = 1
                 _insert_ocr_record(asset_id, page_num, ocr_path, stats)
-            _set_stage(asset_id, "ocr_done")
-            if ocr_warning:
-                _set_stage(asset_id, "ocr_done", error=ocr_warning)
+            engine_msg = ocr_warning or f"OCR engine used: {ocr_engine_name}"
+            _set_stage(asset_id, "ocr_done", error=engine_msg, ocr_engine=ocr_engine_name, warning=ocr_warning)
             current_stage = "ocr_done"
 
         chunks_all: List[dict] = []
@@ -161,6 +179,8 @@ def process_asset(subject_id: str, asset: dict, config=None) -> None:
             page_lookup = {p["page_num"]: p for p in pages}
             for chunk, vec in zip(chunks_all, vectors):
                 page_meta = page_lookup.get(chunk["page_num"], {})
+                identity = f"{chunk['subject_id']}:{chunk['asset_id']}:{chunk['page_num']}:{chunk.get('chunk_id', chunk.get('start_block'))}"
+                point_id = make_point_uuid(identity)
                 payloads.append(
                     {
                         "subject_id": subject_id,
@@ -173,7 +193,7 @@ def process_asset(subject_id: str, asset: dict, config=None) -> None:
                         "preview": chunk["text"][:240],
                     }
                 )
-                ids.append(chunk["chunk_id"])
+                ids.append(point_id)
             store = QdrantStore()
             store.upsert_chunks(vectors, payloads, ids)
             _set_stage(asset_id, "embedded")
