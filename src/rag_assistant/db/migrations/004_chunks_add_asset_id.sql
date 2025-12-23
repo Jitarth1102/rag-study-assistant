@@ -1,0 +1,1 @@
+-- Adds asset_id and other required columns to chunks table if missing (handled in Python).

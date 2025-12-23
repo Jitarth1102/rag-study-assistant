@@ -1,0 +1,1 @@
+-- Adds chunk_id column and indexes if missing (handled in Python).

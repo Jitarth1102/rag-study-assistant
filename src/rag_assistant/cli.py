@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import sys
+from pathlib import Path
 from typing import List
 
 from rag_assistant import __version__
 from rag_assistant.config import load_config
 from rag_assistant.services import subject_service
 from rag_assistant.logging import configure_logging, get_logger, get_run_id
+from rag_assistant.ingest.ocr.selftest import run_ocr_selftest
 
 
 logger = get_logger(__name__)
@@ -43,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     subjects_parser.add_argument("--create", help="Create a new subject with this name")
     subjects_parser.set_defaults(func=_subjects_handler)
 
+    reset_all_parser = subparsers.add_parser("reset-all", help="Reset generated artifacts for all assets")
+    reset_all_parser.set_defaults(func=_reset_all_handler)
+
+    doctor_parser = subparsers.add_parser("doctor", help="Run OCR self-test")
+    doctor_parser.set_defaults(func=_doctor_handler)
+
     return parser
 
 
@@ -65,6 +75,34 @@ def _subjects_handler(args: argparse.Namespace) -> None:
         print(json.dumps({"status": "created", **created}, indent=2))
     subjects = subject_service.list_subjects()
     print(json.dumps({"subjects": subjects}, indent=2))
+
+
+def _reset_all_handler(args: argparse.Namespace) -> None:
+    script_path = Path(__file__).resolve().parent.parent.parent / "scripts" / "reset_all_assets.sh"
+    if not script_path.exists():
+        print("reset_all_assets.sh not found", file=sys.stderr)
+        return
+    result = subprocess.run([str(script_path)], capture_output=True, text=True)
+    print(result.stdout)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr)
+
+
+def _doctor_handler(args: argparse.Namespace) -> None:
+    cfg = load_config()
+    try:
+        res = run_ocr_selftest(cfg)
+        output = {
+            "ocr_engine": cfg.ingest.ocr_engine,
+            "ocr_lang": cfg.ingest.ocr_lang,
+            "tesseract_cmd": cfg.ingest.tesseract_cmd,
+            "tessdata_dir": cfg.ingest.tessdata_dir,
+            "result": res,
+        }
+        print(json.dumps(output, indent=2))
+    except Exception as exc:
+        print(json.dumps({"error": str(exc)}, indent=2))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,10 @@ def _db_path() -> Path:
     return db_path
 
 
+def get_db_path() -> Path:
+    return _db_path()
+
+
 def _sanitize_filename(name: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
     return safe or "upload"
@@ -42,6 +46,10 @@ def _resolve_collision_path(directory: Path, filename: str) -> Path:
 def _get_asset(asset_id: str) -> Optional[dict]:
     sql = "SELECT * FROM assets WHERE asset_id = ?;"
     return execute(_db_path(), sql, (asset_id,), fetchone=True)
+
+
+def get_asset(asset_id: str) -> Optional[dict]:
+    return _get_asset(asset_id)
 
 
 def add_asset(subject_id: str, uploaded_filename: str, file_bytes: bytes, mime_type: str | None) -> dict:
@@ -106,4 +114,24 @@ def list_assets(subject_id: str) -> List[dict]:
     return execute(_db_path(), sql, (subject_id,), fetchall=True) or []
 
 
-__all__ = ["add_asset", "list_assets"]
+def upsert_index_status(asset_id: str, stage: str, error: str | None = None, ocr_engine: str | None = None, warning: str | None = None) -> None:
+    sql = """
+    INSERT INTO asset_index_status (asset_id, stage, updated_at, error, ocr_engine, warning)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(asset_id) DO UPDATE SET
+      stage=excluded.stage,
+      updated_at=excluded.updated_at,
+      error=excluded.error,
+      ocr_engine=excluded.ocr_engine,
+      warning=excluded.warning;
+    """
+    execute(_db_path(), sql, (asset_id, stage, time.time(), error, ocr_engine, warning))
+    # mirror to assets.status for quick UI reads
+    execute(_db_path(), "UPDATE assets SET status = ? WHERE asset_id = ?;", (stage, asset_id))
+
+
+def get_index_status(asset_id: str) -> Optional[dict]:
+    return execute(_db_path(), "SELECT * FROM asset_index_status WHERE asset_id = ?;", (asset_id,), fetchone=True)
+
+
+__all__ = ["add_asset", "list_assets", "get_asset", "upsert_index_status", "get_index_status", "get_db_path"]
