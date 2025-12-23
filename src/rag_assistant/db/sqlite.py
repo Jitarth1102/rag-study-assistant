@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -55,7 +56,20 @@ def ensure_chunks_columns(db_path: Path) -> None:
                 added_chunk_id = True
     if added_chunk_id:
         with get_connection(db_path) as conn:
-            conn.execute("UPDATE chunks SET chunk_id = printf('%s:%s:%s', IFNULL(asset_id,''), IFNULL(page_num,''), rowid) WHERE chunk_id IS NULL OR chunk_id = '' ;")
+            rows = conn.execute(
+                "SELECT rowid, asset_id, page_num, start_block, end_block FROM chunks WHERE chunk_id IS NULL OR chunk_id = '';"
+            ).fetchall()
+            for row in rows:
+                asset_id = row["asset_id"] or ""
+                page_num = row["page_num"] if row["page_num"] is not None else ""
+                start_block = row["start_block"]
+                end_block = row["end_block"]
+                if start_block is not None and end_block is not None and start_block != "" and end_block != "":
+                    identity = f"{asset_id}:{page_num}:{start_block}:{end_block}"
+                else:
+                    identity = f"legacy:{asset_id}:{page_num}:{row['rowid']}"
+                chunk_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+                conn.execute("UPDATE chunks SET chunk_id = ? WHERE rowid = ?;", (chunk_id, row["rowid"]))
             conn.commit()
     # indexes
     with get_connection(db_path) as conn:

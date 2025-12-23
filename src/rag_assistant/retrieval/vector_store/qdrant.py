@@ -13,7 +13,6 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
 from rag_assistant.config import load_config
-from rag_assistant.vectorstore.point_id import make_point_uuid
 from rag_assistant.db.sqlite import execute
 
 logger = logging.getLogger(__name__)
@@ -127,18 +126,15 @@ class QdrantStore:
         collections = {c.name: c for c in self.client.get_collections().collections}
         existing = collections.get(self.collection)
         if existing:
-            # Fetch vector size from collection info
             info = self.client.get_collection(self.collection)
-            current_size = getattr(info, "points_count", None)  # placeholder to trigger fetch
-            current_size = getattr(info, "vectors_count", None) or getattr(
-                getattr(info, "vectors", None), "size", None
-            ) or getattr(getattr(info, "config", None), "params", None)
-            if current_size and hasattr(current_size, "vectors"):
-                current_size = getattr(current_size.vectors, "size", None)
+            current_size = self._get_collection_vector_size(info)
             if current_size is None:
-                current_size = getattr(info, "points_count", None)
-            current_size = int(current_size) if current_size else None
-            if current_size and int(current_size) != int(self.vector_size):
+                logger.warning(
+                    "Could not determine vector size for existing Qdrant collection '%s'; skipping compatibility check.",
+                    self.collection,
+                )
+                return
+            if current_size != int(self.vector_size):
                 raise RuntimeError(
                     f"Qdrant collection '{self.collection}' has vector size {current_size}, expected {self.vector_size}. "
                     f"Use a new collection name or recreate the collection."
@@ -179,6 +175,55 @@ class QdrantStore:
                 payload.setdefault("end_block", row.get("end_block"))
                 payload.setdefault("page_num", row.get("page_num"))
         return payload
+
+    @staticmethod
+    def _maybe_int(value) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _vector_size_from_vectors_cfg(cls, vectors_cfg) -> int | None:
+        if vectors_cfg is None:
+            return None
+        root = getattr(vectors_cfg, "__root__", None)
+        if root is not None:
+            return cls._vector_size_from_vectors_cfg(root)
+        size = getattr(vectors_cfg, "size", None)
+        if size is not None:
+            return cls._maybe_int(size)
+        if isinstance(vectors_cfg, dict):
+            cfg = vectors_cfg.get("default") or next(iter(vectors_cfg.values()), None)
+            if cfg is None:
+                return None
+            root_cfg = getattr(cfg, "__root__", None)
+            if root_cfg is not None:
+                cfg = root_cfg
+            if isinstance(cfg, dict):
+                return cls._maybe_int(cfg.get("size") or cfg.get("vector_size"))
+            return cls._maybe_int(getattr(cfg, "size", None))
+        nested = getattr(vectors_cfg, "vectors", None)
+        if nested is not None:
+            return cls._vector_size_from_vectors_cfg(nested)
+        return None
+
+    @classmethod
+    def _get_collection_vector_size(cls, info) -> int | None:
+        config = getattr(info, "config", None)
+        params = getattr(config, "params", None) if config is not None else None
+        vectors_cfg = getattr(params, "vectors", None) if params is not None else None
+        size = cls._vector_size_from_vectors_cfg(vectors_cfg)
+        if size is not None:
+            return size
+        # Some clients expose vectors directly
+        size = cls._vector_size_from_vectors_cfg(getattr(info, "vectors", None))
+        if size is not None:
+            return size
+        # Older fallback
+        if params is not None:
+            return cls._maybe_int(getattr(params, "vector_size", None) or getattr(params, "size", None))
+        return None
 
     def search(self, vector: List[float], subject_id: str | None, limit: int) -> List[dict]:
         def _search(filter_obj):

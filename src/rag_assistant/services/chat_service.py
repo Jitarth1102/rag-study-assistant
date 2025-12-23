@@ -11,4 +11,13 @@ def ask(subject_id: str, question: str) -> dict:
     try:
         return rag_ask(subject_id, question, top_k=cfg.retrieval.top_k, config=cfg)
     except Exception as exc:  # pragma: no cover - runtime safeguard
-        return {"answer": f"Error answering question: {type(exc).__name__}: {exc}", "citations": []}
+        return {
+            "answer": (
+                "An unexpected error occurred while answering the question. "
+                "Please check that the retrieval backend (for example, Qdrant) is running, "
+                "that any required API keys are configured, and that the selected subject "
+                "has indexed content.\n"
+                f"Details: {type(exc).__name__}: {exc}"
+            ),
+            "citations": [],
+        }
