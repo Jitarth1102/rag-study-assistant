@@ -69,6 +69,17 @@ class EmbeddingsConfig(BaseModel):
     vector_size: int = Field(default=384)
 
 
+class WebConfig(BaseModel):
+    enabled: bool = Field(default=False)
+    provider: str = Field(default="serpapi")
+    api_key: str = Field(default="")
+    max_results: int = Field(default=5)
+    timeout_s: int = Field(default=20)
+    min_rag_score_to_skip_web: float = Field(default=0.65)
+    min_rag_hits_to_skip_web: int = Field(default=3)
+    max_web_queries_per_question: int = Field(default=2)
+
+
 class Settings(BaseModel):
     app: AppConfig
     database: DatabaseConfig
@@ -78,6 +89,7 @@ class Settings(BaseModel):
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
 
 
 DEFAULT_CONFIG_PATH = Path("config/default.yaml")
@@ -117,20 +129,31 @@ def _apply_env_overrides(data: dict) -> dict:
         ("retrieval", "neighbor_window"): os.getenv("RETRIEVAL_NEIGHBOR_WINDOW"),
         ("retrieval", "max_neighbor_chunks"): os.getenv("RETRIEVAL_MAX_NEIGHBOR_CHUNKS"),
         ("retrieval", "min_score"): os.getenv("RETRIEVAL_MIN_SCORE"),
+        ("web", "enabled"): os.getenv("WEB_ENABLED"),
+        ("web", "provider"): os.getenv("WEB_PROVIDER"),
+        ("web", "api_key"): os.getenv("WEB_API_KEY"),
+        ("web", "max_results"): os.getenv("WEB_MAX_RESULTS"),
+        ("web", "timeout_s"): os.getenv("WEB_TIMEOUT_S"),
+        ("web", "min_rag_score_to_skip_web"): os.getenv("WEB_MIN_RAG_SCORE_TO_SKIP_WEB"),
+        ("web", "min_rag_hits_to_skip_web"): os.getenv("WEB_MIN_RAG_HITS_TO_SKIP_WEB"),
+        ("web", "max_web_queries_per_question"): os.getenv("WEB_MAX_WEB_QUERIES_PER_QUESTION"),
     }
     for (section, key), value in overrides.items():
         if value is None:
             continue
         if section not in data:
             data[section] = {}
-        if key in {"port", "vector_size", "top_k", "neighbor_window", "max_neighbor_chunks"}:
+        if key in {"enabled"}:
+            data[section][key] = str(value).strip().lower() in {"1", "true", "yes", "on"}
+            continue
+        if key in {"port", "vector_size", "top_k", "neighbor_window", "max_neighbor_chunks", "max_results", "timeout_s", "min_rag_hits_to_skip_web", "max_web_queries_per_question"}:
             try:
                 data[section][key] = int(value)
                 continue
             except ValueError:
                 # keep original if conversion fails
                 pass
-        if key in {"temperature", "timeout_s", "min_score"}:
+        if key in {"temperature", "timeout_s", "min_score", "min_rag_score_to_skip_web"}:
             try:
                 if key in {"temperature"}:
                     data[section][key] = float(value)
@@ -172,4 +195,5 @@ __all__ = [
     "RetrievalConfig",
     "LLMConfig",
     "load_config",
+    "WebConfig",
 ]

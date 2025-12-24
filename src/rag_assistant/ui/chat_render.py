@@ -17,6 +17,7 @@ def render_chat(subject_id: str):
     citations = []
     context_expanded = st.session_state.get("last_context_expanded", 0)
     last_debug = st.session_state.get("last_retrieval_debug")
+    used_web = st.session_state.get("last_used_web", False)
     if st.button("Send") and user_input:
         session_state.add_message("user", user_input)
         response = chat_service.ask(subject_id=subject_id, question=user_input)
@@ -25,6 +26,7 @@ def render_chat(subject_id: str):
         context_expanded = response.get("context_expanded", 0) or 0
         st.session_state["last_context_expanded"] = context_expanded
         st.session_state["last_retrieval_debug"] = response.get("debug")
+        st.session_state["last_used_web"] = response.get("used_web", False)
         st.success("Response received")
 
     for message in messages:
@@ -34,6 +36,8 @@ def render_chat(subject_id: str):
 
     if context_expanded:
         st.caption(f"Context expanded: +{context_expanded} neighbor chunks")
+    if used_web:
+        st.caption("Used web sources to fill gaps.")
 
     if st.checkbox("Show retrieval debug", value=False):
         debug_data = st.session_state.get("last_retrieval_debug")
