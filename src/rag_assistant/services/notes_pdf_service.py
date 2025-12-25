@@ -9,8 +9,22 @@ from typing import List, Tuple
 
 import fitz  # PyMuPDF
 
+try:  # optional math rendering
+    import matplotlib.pyplot as plt
+except Exception:  # pragma: no cover - optional dependency
+    plt = None
 
 Block = Tuple[str, dict]
+
+
+MATH_INLINE_RE = re.compile(r"\$(.+?)\$")
+MATH_DISPLAY_RE = re.compile(r"^\s*\$\$(.+?)\$\$\s*$")
+
+
+def _strip_math_tokens(text: str) -> str:
+    text = re.sub(r"\$\$(.+?)\$\$", r"\1", text)
+    text = MATH_INLINE_RE.sub(r"\1", text)
+    return text
 
 
 def _parse_markdown(md: str) -> List[Block]:
@@ -21,6 +35,13 @@ def _parse_markdown(md: str) -> List[Block]:
     code_lang = ""
     for raw_line in md.splitlines():
         line = raw_line.rstrip("\n")
+        display_math = MATH_DISPLAY_RE.match(line.strip())
+        if display_math:
+            if paragraph:
+                blocks.append(("paragraph", {"text": " ".join(paragraph)}))
+                paragraph = []
+            blocks.append(("math_block", {"text": display_math.group(1).strip()}))
+            continue
         if line.strip().startswith("```"):
             if not in_code:
                 in_code = True
@@ -39,6 +60,15 @@ def _parse_markdown(md: str) -> List[Block]:
         bullet_match = re.match(r"^\s*[-*+]\s+(.*)", line)
         ordered_match = re.match(r"^\s*\d+\.\s+(.*)", line)
         hr_match = re.match(r"^\s*(---|\*\*\*|___)\s*$", line)
+
+        if heading_match:
+            if paragraph:
+                blocks.append(("paragraph", {"text": " ".join(paragraph)}))
+                paragraph = []
+            level = min(len(heading_match.group(1)), 3)
+            text = _strip_math_tokens(heading_match.group(2).strip())
+            blocks.append(("heading", {"level": level, "text": text}))
+        line_no_math = _strip_math_tokens(line)
 
         if heading_match:
             if paragraph:
@@ -73,7 +103,7 @@ def _parse_markdown(md: str) -> List[Block]:
                 blocks.append(("paragraph", {"text": " ".join(paragraph)}))
                 paragraph = []
         else:
-            paragraph.append(line.strip())
+            paragraph.append(line_no_math.strip())
 
     if paragraph:
         blocks.append(("paragraph", {"text": " ".join(paragraph)}))
@@ -139,6 +169,40 @@ def render_notes_markdown_to_pdf(markdown_text: str, title: str | None = None) -
             cursor_y += 11
         cursor_y += line_spacing
 
+    def add_mathblock(text: str):
+        nonlocal cursor_y
+        math_text = text.strip()
+        if not math_text:
+            return
+        ensure_space(40)
+        # Always insert readable text; optionally render an image if matplotlib is available.
+        page.insert_text(
+            (margin, cursor_y),
+            math_text,
+            fontsize=12,
+            fontname="courier",
+            fill=(0.1, 0.1, 0.1),
+        )
+        img_height = 0
+        if plt is not None:
+            try:
+                buf = io.BytesIO()
+                fig, ax = plt.subplots(figsize=(3, 0.8), dpi=200)
+                ax.axis("off")
+                ax.text(0.05, 0.5, f"${math_text}$", fontsize=12)
+                fig.tight_layout()
+                fig.savefig(buf, format="png", transparent=True)
+                plt.close(fig)
+                buf.seek(0)
+                pix = fitz.Pixmap(buf.getvalue())
+                img_height = pix.height / 2.0
+                rect = fitz.Rect(margin, cursor_y + 14, margin + pix.width / 2.0, cursor_y + 14 + img_height)
+                page.insert_image(rect, stream=buf.getvalue())
+            except Exception:
+                pass
+        cursor_y += max(24, img_height + 18)
+        cursor_y += line_spacing
+
     def add_hr():
         nonlocal cursor_y
         ensure_space(10)
@@ -169,6 +233,8 @@ def render_notes_markdown_to_pdf(markdown_text: str, title: str | None = None) -
                 list_counter = 1
         elif kind == "code":
             add_codeblock(data.get("text", ""))
+        elif kind == "math_block":
+            add_mathblock(data.get("text", ""))
         elif kind == "blockquote":
             add_paragraph(data.get("text", ""), size=11, font="helv", leading=14, indent=18)
         elif kind == "hr":

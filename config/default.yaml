@@ -48,15 +48,16 @@ embeddings:
   model: "intfloat/multilingual-e5-small"
   vector_size: 384
 
-web:
-  enabled: false
-  provider: serpapi
-  api_key: ""
-  max_results: 5
-  timeout_s: 20
-  min_rag_score_to_skip_web: 0.65
-  min_rag_hits_to_skip_web: 3
-  max_web_queries_per_question: 2
+notes:
+  debug: false
+  generation:
+    temperature: 0.2
+    top_p: 0.9
+    seed: 42
+    max_tokens: 1200
+    target_chars: 10000
+    min_chars: 8000
+
 web:
   enabled: false
   provider: serpapi

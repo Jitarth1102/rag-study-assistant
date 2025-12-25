@@ -69,6 +69,20 @@ class EmbeddingsConfig(BaseModel):
     vector_size: int = Field(default=384)
 
 
+class NotesGenerationConfig(BaseModel):
+    temperature: float = Field(default=0.2)
+    top_p: float = Field(default=0.9)
+    seed: Optional[int] = Field(default=None)
+    max_tokens: int = Field(default=1200)
+    target_chars: int = Field(default=10000)
+    min_chars: int = Field(default=8000)
+
+
+class NotesConfig(BaseModel):
+    debug: bool = Field(default=False)
+    generation: NotesGenerationConfig = Field(default_factory=NotesGenerationConfig)
+
+
 class WebConfig(BaseModel):
     enabled: bool = Field(default=False)
     provider: str = Field(default="serpapi")
@@ -92,6 +106,7 @@ class Settings(BaseModel):
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
+    notes: NotesConfig = Field(default_factory=NotesConfig)
     web: WebConfig = Field(default_factory=WebConfig)
 
 
@@ -200,4 +215,6 @@ __all__ = [
     "LLMConfig",
     "load_config",
     "WebConfig",
+    "NotesConfig",
+    "NotesGenerationConfig",
 ]

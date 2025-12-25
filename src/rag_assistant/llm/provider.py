@@ -16,12 +16,16 @@ except Exception:  # pragma: no cover - optional import
     OpenAIError = Exception  # type: ignore
 
 
-def generate_answer(prompt: str, config=None) -> str:
+def generate_answer(prompt: str, config=None, **generation_kwargs) -> str:
     cfg = config or load_config()
     provider = cfg.llm.provider.lower()
+    temperature = generation_kwargs.get("temperature", cfg.llm.temperature)
+    top_p = generation_kwargs.get("top_p")
+    seed = generation_kwargs.get("seed")
+    max_tokens = generation_kwargs.get("max_tokens")
     if provider == "ollama":
         client = OllamaClient(base_url=cfg.llm.base_url, model=cfg.llm.model, timeout_s=cfg.llm.timeout_s)
-        return client.generate(prompt, temperature=cfg.llm.temperature)
+        return client.generate(prompt, temperature=temperature, top_p=top_p, seed=seed, max_tokens=max_tokens)
     if provider == "openai":
         api_key = os.getenv("OPENAI_API_KEY")
         base_url = os.getenv("OPENAI_BASE_URL")
@@ -31,7 +35,9 @@ def generate_answer(prompt: str, config=None) -> str:
         completion = client.chat.completions.create(
             model=cfg.llm.chat_model,
             messages=[{"role": "system", "content": "Answer using only provided notes."}, {"role": "user", "content": prompt}],
-            max_tokens=400,
+            temperature=temperature,
+            top_p=top_p or 1,
+            max_tokens=max_tokens or 400,
         )
         return completion.choices[0].message.content or ""
     return "LLM provider not supported."
