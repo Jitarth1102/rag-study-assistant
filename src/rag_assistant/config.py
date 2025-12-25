@@ -78,6 +78,9 @@ class WebConfig(BaseModel):
     min_rag_score_to_skip_web: float = Field(default=0.65)
     min_rag_hits_to_skip_web: int = Field(default=3)
     max_web_queries_per_question: int = Field(default=2)
+    force_even_if_rag_strong: bool = Field(default=False)
+    allowed_domains: list[str] = Field(default_factory=list)
+    blocked_domains: list[str] = Field(default_factory=list)
 
 
 class Settings(BaseModel):
@@ -137,6 +140,7 @@ def _apply_env_overrides(data: dict) -> dict:
         ("web", "min_rag_score_to_skip_web"): os.getenv("WEB_MIN_RAG_SCORE_TO_SKIP_WEB"),
         ("web", "min_rag_hits_to_skip_web"): os.getenv("WEB_MIN_RAG_HITS_TO_SKIP_WEB"),
         ("web", "max_web_queries_per_question"): os.getenv("WEB_MAX_WEB_QUERIES_PER_QUESTION"),
+        ("web", "force_even_if_rag_strong"): os.getenv("WEB_FORCE_EVEN_IF_RAG_STRONG"),
     }
     for (section, key), value in overrides.items():
         if value is None:

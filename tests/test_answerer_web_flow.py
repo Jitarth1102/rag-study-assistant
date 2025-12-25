@@ -25,6 +25,9 @@ def test_answerer_web_fallback(monkeypatch):
         def search(self, vector, subject_id, limit):
             return []
 
+        def search_notes(self, vector, subject_id, limit):
+            return []
+
     cfg = SimpleNamespace(
         web=SimpleNamespace(
             enabled=True,
@@ -47,7 +50,11 @@ def test_answerer_web_fallback(monkeypatch):
     monkeypatch.setattr(answerer, "expand_with_neighbors", lambda *a, **k: [])
     monkeypatch.setattr(answerer, "generate_answer", lambda prompt, cfg: "answer with web")
     monkeypatch.setattr(answerer.judge, "should_search_web", lambda *a, **k: JudgeDecision(do_search=True, reason="no_hits", suggested_queries=["q"]))
-    monkeypatch.setattr(answerer.search_client, "search", lambda query, config=None: [WebResult(title="Web", url="http://example.com", snippet="Snippet", source="example.com")])
+    monkeypatch.setattr(
+        answerer.search_client,
+        "search",
+        lambda query, config=None, **kwargs: [WebResult(title="Web", url="http://example.com", snippet="Snippet", source="example.com")],
+    )
 
     res = answerer.ask("subj", "question", 3, config=cfg)
     assert res["used_web"] is True

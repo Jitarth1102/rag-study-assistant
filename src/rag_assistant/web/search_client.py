@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import requests
+from urllib.parse import urlparse
 
 from rag_assistant.config import load_config
 
@@ -23,6 +24,29 @@ class WebResult:
 
 class WebSearchError(RuntimeError):
     """Raised when web search fails."""
+
+
+def _extract_domain(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        host = parsed.netloc or ""
+        return host.lower()
+    except Exception:
+        return ""
+
+
+def _filter_results(results: List[WebResult], allowlist: list[str], blocklist: list[str]) -> List[WebResult]:
+    allow = [d.lower().strip() for d in allowlist if d] if allowlist else []
+    block = [d.lower().strip() for d in blocklist if d] if blocklist else []
+    filtered = []
+    for res in results:
+        domain = res.source.lower() if res.source else _extract_domain(res.url)
+        if block and any(domain.endswith(b) for b in block):
+            continue
+        if allow and not any(domain.endswith(a) for a in allow):
+            continue
+        filtered.append(res)
+    return filtered
 
 
 def _serpapi_search(query: str, api_key: str, max_results: int, timeout_s: int) -> List[WebResult]:
@@ -50,12 +74,12 @@ def _serpapi_search(query: str, api_key: str, max_results: int, timeout_s: int) 
         title = item.get("title") or ""
         url = item.get("link") or item.get("url") or ""
         snippet = item.get("snippet") or ""
-        source = item.get("source") or ""
+        source = item.get("source") or _extract_domain(url)
         results.append(WebResult(title=title, url=url, snippet=snippet, source=source))
     return results
 
 
-def search(query: str, max_results: Optional[int] = None, config=None) -> List[WebResult]:
+def search(query: str, max_results: Optional[int] = None, config=None, allowlist: Optional[list[str]] = None, blocklist: Optional[list[str]] = None) -> List[WebResult]:
     cfg = config or load_config()
     web_cfg = cfg.web
     if not web_cfg.enabled:
@@ -69,7 +93,8 @@ def search(query: str, max_results: Optional[int] = None, config=None) -> List[W
     if provider != "serpapi":
         raise WebSearchError(f"Unsupported web provider: {provider}")
 
-    return _serpapi_search(query, api_key=api_key, max_results=max_res, timeout_s=timeout_s)
+    results = _serpapi_search(query, api_key=api_key, max_results=max_res, timeout_s=timeout_s)
+    return _filter_results(results, allowlist or [], blocklist or [])
 
 
 __all__ = ["search", "WebResult", "WebSearchError"]

@@ -13,6 +13,7 @@ NAV_LINKS = [
     ("Chat", "pages/1_Chat.py"),
     ("Upload", "pages/2_Upload.py"),
     ("Study Tools", "pages/3_Study_Tools.py"),
+    ("Notes", "pages/4_Notes.py"),
 ]
 
 

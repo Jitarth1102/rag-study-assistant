@@ -183,6 +183,7 @@ def process_asset(subject_id: str, asset: dict, config=None, *, force: bool = Fa
                 point_id = make_point_uuid(identity)
                 payloads.append(
                     {
+                        "source_type": "slide",
                         "subject_id": subject_id,
                         "asset_id": asset_id,
                         "page_num": chunk["page_num"],

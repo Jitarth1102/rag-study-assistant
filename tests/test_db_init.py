@@ -13,6 +13,8 @@ def test_init_db_creates_tables(tmp_path: Path):
     expected = {
         "documents",
         "chunks",
+        "notes",
+        "notes_chunks",
         "runs",
         "quiz_attempts",
         "subjects",

@@ -9,5 +9,5 @@ def test_ingest_tables_exist(tmp_path: Path):
     init_db(db_path)
     with sqlite3.connect(db_path) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table';")}
-    expected = {"asset_index_status", "asset_pages", "asset_ocr_pages", "chunks"}
+    expected = {"asset_index_status", "asset_pages", "asset_ocr_pages", "chunks", "notes", "notes_chunks"}
     assert expected.issubset(tables)

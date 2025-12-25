@@ -125,6 +125,8 @@ def apply_migrations(db_path: Path) -> None:
 
 def delete_asset_dependent_rows(db_path: Path, asset_id: str) -> None:
     with get_connection(db_path) as conn:
+        conn.execute("DELETE FROM notes_chunks WHERE asset_id = ?;", (asset_id,))
+        conn.execute("DELETE FROM notes WHERE asset_id = ?;", (asset_id,))
         conn.execute("DELETE FROM asset_pages WHERE asset_id = ?;", (asset_id,))
         conn.execute("DELETE FROM asset_ocr_pages WHERE asset_id = ?;", (asset_id,))
         if has_column(db_path, "chunks", "asset_id"):

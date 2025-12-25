@@ -10,7 +10,8 @@ import streamlit as st
 def render_citations(citations):
     if not citations:
         return
-    slides = [c for c in citations if c.get("type") == "slide" or "asset_id" in c]
+    slides = [c for c in citations if c.get("type") == "slide" or ("asset_id" in c and c.get("type") not in {"notes", "web"})]
+    notes = [c for c in citations if c.get("type") == "notes"]
     web = [c for c in citations if c.get("type") == "web"]
 
     if slides:
@@ -26,8 +27,17 @@ def render_citations(citations):
                 with st.expander("View page image"):
                     st.image(str(image_path), use_column_width=True)
 
+    if notes:
+        st.markdown("### Citations (Notes)")
+        for citation in notes:
+            section = citation.get("section_title") or "Notes"
+            quote = citation.get("quote", "")
+            asset = citation.get("asset_id") or ""
+            label = citation.get("source_label") or citation.get("source") or "Notes"
+            st.markdown(f"- **{section}** (asset {asset}, source: {label}): {quote}")
+
     if web:
-        st.markdown("### Citations (Web)")
+        st.markdown("### Web sources")
         for citation in web:
             title = citation.get("title") or citation.get("url") or "web source"
             quote = citation.get("quote", "")

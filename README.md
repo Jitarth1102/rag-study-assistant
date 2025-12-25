@@ -53,7 +53,8 @@ Local-first multimodal RAG study assistant. Runnable skeleton (CLI + Streamlit) 
 
 - Create subjects on Home, select one in the sidebar, then upload files on Upload. Files are stored under `data/subjects/<subject_id>/raw/` and tracked in SQLite.
 - Indexing pipeline runs from Upload via **Index new uploads** (render pages, OCR, chunk, embed, upsert to Qdrant). Ensure Qdrant is running (`make qdrant`) and Ollama is up if using the default LLM.
-- Chat page performs notes-only retrieval QA over indexed chunks.
+- Chat page performs retrieval QA over indexed slide chunks and generated/user notes.
+- Notes page lets you generate, edit, and re-index Markdown notes per asset.
 - System Health page surfaces quick dependency checks (DB, Qdrant, Ollama, OCR self-test).
 - CLI ingest mirrors the Upload “Index new uploads” button: `uv run python -m rag_assistant ingest --subject <subject_id>`.
 - Optional web search fallback is **off by default**; enable with `WEB_ENABLED=true` and provider API key (SerpAPI). When enabled, the answer may include web citations.

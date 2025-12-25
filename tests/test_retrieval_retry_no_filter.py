@@ -26,6 +26,9 @@ def test_retry_without_subject_filter(monkeypatch):
                 }
             ]
 
+        def search_notes(self, vector, subject_id, limit):
+            return []
+
     class DummyEmbedder:
         def __init__(self, *args, **kwargs):
             pass

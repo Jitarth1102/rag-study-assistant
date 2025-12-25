@@ -27,7 +27,7 @@ def check_db(cfg) -> dict:
     try:
         with get_connection(path) as conn:
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()}
-        required = {"subjects", "assets", "chunks", "asset_pages", "asset_ocr_pages", "asset_index_status"}
+        required = {"subjects", "assets", "chunks", "asset_pages", "asset_ocr_pages", "asset_index_status", "notes", "notes_chunks"}
         missing = sorted(required - tables)
         return HealthResult(ok=len(missing) == 0, detail={"path": str(path), "tables": sorted(tables), "missing": missing}).to_dict()
     except Exception as exc:

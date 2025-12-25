@@ -123,10 +123,18 @@ class QdrantStore:
         return 0
 
     def ensure_collection(self) -> None:
-        collections = {c.name: c for c in self.client.get_collections().collections}
+        try:
+            collections = {c.name: c for c in self.client.get_collections().collections}
+        except Exception as exc:
+            logger.warning("Skipping Qdrant collection ensure; get_collections failed", extra={"error": str(exc)})
+            return
         existing = collections.get(self.collection)
         if existing:
-            info = self.client.get_collection(self.collection)
+            try:
+                info = self.client.get_collection(self.collection)
+            except Exception as exc:
+                logger.warning("Skipping collection vector size check; get_collection failed", extra={"error": str(exc)})
+                return
             current_size = self._get_collection_vector_size(info)
             if current_size is None:
                 logger.warning(
@@ -140,10 +148,13 @@ class QdrantStore:
                     f"Use a new collection name or recreate the collection."
                 )
             return
-        self.client.create_collection(
-            collection_name=self.collection,
-            vectors_config=qmodels.VectorParams(size=self.vector_size, distance=qmodels.Distance.COSINE),
-        )
+        try:
+            self.client.create_collection(
+                collection_name=self.collection,
+                vectors_config=qmodels.VectorParams(size=self.vector_size, distance=qmodels.Distance.COSINE),
+            )
+        except Exception as exc:
+            logger.warning("Skipping collection creation; Qdrant not reachable", extra={"error": str(exc)})
 
     def upsert_chunks(self, vectors: List[List[float]], payloads: List[dict], ids: List[str]) -> None:
         if not vectors:
@@ -175,6 +186,54 @@ class QdrantStore:
                 payload.setdefault("end_block", row.get("end_block"))
                 payload.setdefault("page_num", row.get("page_num"))
         return payload
+
+    def _process_hits(self, res_points) -> list[dict]:
+        hits_local = []
+        for point in res_points:
+            raw_payload = getattr(point, "payload", {}) or {}
+            if not isinstance(raw_payload, dict):
+                try:
+                    raw_payload = dict(raw_payload)  # type: ignore[arg-type]
+                except Exception:
+                    raw_payload = {}
+            payload = self._hydrate_payload(raw_payload)
+            payload.setdefault("chunk_id", raw_payload.get("chunk_id"))
+            payload.setdefault("page_num", raw_payload.get("page_num"))
+            payload.setdefault("asset_id", raw_payload.get("asset_id"))
+            payload.setdefault("subject_id", raw_payload.get("subject_id"))
+            payload.setdefault("source", raw_payload.get("source"))
+            payload.setdefault("source_type", raw_payload.get("source_type"))
+            payload.setdefault("notes_id", raw_payload.get("notes_id"))
+            payload.setdefault("notes_chunk_id", raw_payload.get("notes_chunk_id"))
+            payload.setdefault("source_label", raw_payload.get("source_label"))
+            payload.setdefault("version", raw_payload.get("version"))
+            chunk_id = payload.get("chunk_id")
+            if not chunk_id:
+                logger.warning("Dropping Qdrant hit without chunk_id", extra={"point_id": getattr(point, "id", None)})
+                continue
+            if not payload.get("text"):
+                payload = self._hydrate_payload(payload)
+            if not payload.get("text"):
+                logger.warning("Dropping Qdrant hit missing text after hydration", extra={"chunk_id": chunk_id})
+                continue
+            if payload.get("source_type") != "notes" and payload.get("page_num") is None:
+                logger.warning("Dropping Qdrant hit missing page_num", extra={"chunk_id": chunk_id})
+                continue
+            payload["score"] = payload.get("score", getattr(point, "score", None))
+            payload["id"] = getattr(point, "id", None)
+            hits_local.append(payload)
+        return hits_local
+
+    def _run_search(self, vector: List[float], limit: int, filter_obj):
+        res = search_points(
+            self.client,
+            collection_name=self.collection,
+            vector=vector,
+            limit=limit,
+            query_filter=filter_obj,
+            with_payload=True,
+        )
+        return self._process_hits(res)
 
     @staticmethod
     def _maybe_int(value) -> int | None:
@@ -226,55 +285,25 @@ class QdrantStore:
         return None
 
     def search(self, vector: List[float], subject_id: str | None, limit: int) -> List[dict]:
-        def _search(filter_obj):
-            return search_points(
-                self.client,
-                collection_name=self.collection,
-                vector=vector,
-                limit=limit,
-                query_filter=filter_obj,
-                with_payload=True,
-            )
-
         filter_obj = (
             qmodels.Filter(must=[qmodels.FieldCondition(key="subject_id", match=qmodels.MatchValue(value=subject_id))])
             if subject_id
             else None
         )
-        res = _search(filter_obj)
-
-        def _process(res_points):
-            hits_local = []
-            for point in res_points:
-                raw_payload = getattr(point, "payload", {}) or {}
-                if not isinstance(raw_payload, dict):
-                    try:
-                        raw_payload = dict(raw_payload)  # type: ignore[arg-type]
-                    except Exception:
-                        raw_payload = {}
-                payload = self._hydrate_payload(raw_payload)
-                payload.setdefault("chunk_id", raw_payload.get("chunk_id"))
-                payload.setdefault("page_num", raw_payload.get("page_num"))
-                payload.setdefault("asset_id", raw_payload.get("asset_id"))
-                payload.setdefault("subject_id", raw_payload.get("subject_id"))
-                chunk_id = payload.get("chunk_id")
-                if not chunk_id:
-                    logger.warning("Dropping Qdrant hit without chunk_id", extra={"point_id": getattr(point, "id", None)})
-                    continue
-                if not payload.get("text"):
-                    payload = self._hydrate_payload(payload)
-                if not payload.get("text") or payload.get("page_num") is None:
-                    logger.warning("Dropping Qdrant hit missing text/page_num after hydration", extra={"chunk_id": chunk_id})
-                    continue
-                payload["score"] = payload.get("score", getattr(point, "score", None))
-                payload["id"] = getattr(point, "id", None)
-                hits_local.append(payload)
-            return hits_local
-
-        hits = _process(res)
+        hits = self._run_search(vector, limit, filter_obj)
         if not hits and subject_id:
-            retry_res = _search(None)
-            hits = _process(retry_res)
+            hits = self._run_search(vector, limit, None)
+        return hits
+
+    def search_notes(self, vector: List[float], subject_id: str | None, limit: int) -> List[dict]:
+        must = [qmodels.FieldCondition(key="source_type", match=qmodels.MatchValue(value="notes"))]
+        if subject_id:
+            must.append(qmodels.FieldCondition(key="subject_id", match=qmodels.MatchValue(value=subject_id)))
+        filter_obj = qmodels.Filter(must=must)
+        hits = self._run_search(vector, limit, filter_obj)
+        if not hits and subject_id:
+            fallback_filter = qmodels.Filter(must=[qmodels.FieldCondition(key="source_type", match=qmodels.MatchValue(value="notes"))])
+            hits = self._run_search(vector, limit, fallback_filter)
         return hits
 
     def delete_by_asset_id(self, asset_id: str) -> None:
@@ -287,6 +316,17 @@ class QdrantStore:
             )
         except Exception:
             # best-effort; caller may ignore failures
+            pass
+
+    def delete_by_notes_id(self, notes_id: str) -> None:
+        try:
+            self.client.delete(
+                collection_name=self.collection,
+                points_selector=qmodels.Filter(
+                    must=[qmodels.FieldCondition(key="notes_id", match=qmodels.MatchValue(value=notes_id))]
+                ),
+            )
+        except Exception:
             pass
 
     def health_check(self) -> None:

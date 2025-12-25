@@ -25,7 +25,13 @@ def _looks_like_definition(question: str) -> bool:
     return any(p in q for p in patterns)
 
 
-def should_search_web(question: str, rag_hits: List[dict], rag_debug: dict | None = None, config=None) -> JudgeDecision:
+def should_search_web(
+    question: str,
+    rag_hits: List[dict],
+    rag_debug: dict | None = None,
+    config=None,
+    force_even_if_rag_strong: bool = False,
+) -> JudgeDecision:
     cfg = config or load_config()
     web_cfg = cfg.web
     if not getattr(web_cfg, "enabled", False):
@@ -42,8 +48,15 @@ def should_search_web(question: str, rag_hits: List[dict], rag_debug: dict | Non
                 top_score = 0.0
     min_hits = getattr(web_cfg, "min_rag_hits_to_skip_web", 3)
     min_score = getattr(web_cfg, "min_rag_score_to_skip_web", 0.65)
-    if hit_count >= min_hits and top_score >= min_score:
+    hits_gate = min_hits is not None and min_hits > 0
+    score_gate = min_score is not None and min_score > 0
+    skip_by_hits = hits_gate and hit_count >= min_hits
+    skip_by_score = score_gate and top_score is not None and top_score >= min_score
+    if (skip_by_hits or skip_by_score) and not force_even_if_rag_strong:
         return JudgeDecision(do_search=False, reason="rag_confident", suggested_queries=[])
+
+    if force_even_if_rag_strong:
+        return JudgeDecision(do_search=True, reason="forced_by_user", suggested_queries=[question])
 
     # If context is weak and question is definitional/explanatory, try web.
     if _looks_like_definition(question):

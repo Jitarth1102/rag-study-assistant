@@ -36,4 +36,4 @@ def test_render_citations_splits_web_and_slides(monkeypatch):
     ]
     citations_render.render_citations(citations)
     assert any("Citations (Slides)" in m for m in dummy.markdowns)
-    assert any("Citations (Web)" in m for m in dummy.markdowns)
+    assert any("Web sources" in m for m in dummy.markdowns)

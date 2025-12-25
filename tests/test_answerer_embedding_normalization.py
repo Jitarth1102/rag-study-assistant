@@ -25,6 +25,9 @@ def test_query_embedding_normalized_to_list(monkeypatch):
             called["vector"] = vector
             return []
 
+        def search_notes(self, vector, subject_id, limit):
+            return []
+
     monkeypatch.setattr(answerer, "Embedder", lambda *args, **kwargs: DummyEmbedder())
     monkeypatch.setattr(answerer, "QdrantStore", lambda: DummyStore())
 

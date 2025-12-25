@@ -37,6 +37,18 @@ def _get_hit_field(hit: dict, key: str, default=None):
     return default
 
 
+def _dedupe_by_chunk_id(chunks: List[dict]) -> List[dict]:
+    seen = set()
+    deduped = []
+    for ch in chunks:
+        cid = _get_hit_field(ch, "chunk_id")
+        if cid in seen:
+            continue
+        seen.add(cid)
+        deduped.append(ch)
+    return deduped
+
+
 def _format_context(chunks: List[dict]) -> str:
     lines = []
     for chunk in chunks:
@@ -44,7 +56,16 @@ def _format_context(chunks: List[dict]) -> str:
         chunk_id = _get_hit_field(chunk, "chunk_id")
         source = _get_hit_field(chunk, "source") or _get_hit_field(chunk, "asset_id")
         page = _get_hit_field(chunk, "page_num")
-        lines.append(f"[chunk:{chunk_id}] (asset={source}, page={page})\n{snippet}\n")
+        section = _get_hit_field(chunk, "section_title")
+        source_type = _get_hit_field(chunk, "source_type") or "slide"
+        if source_type == "notes":
+            label = _get_hit_field(chunk, "source_label") or _get_hit_field(chunk, "source") or "Notes"
+            asset = _get_hit_field(chunk, "asset_id") or source
+            lines.append(
+                f"[chunk:{chunk_id}] (notes section={section or 'notes'}, asset={asset}, source={label})\n{snippet}\n"
+            )
+        else:
+            lines.append(f"[chunk:{chunk_id}] (asset={source}, page={page})\n{snippet}\n")
     return "\n".join(lines)
 
 
@@ -65,6 +86,7 @@ def ask(subject_id: str, question: str, top_k: int, config=None) -> dict:
     embedder = Embedder(config=cfg)
     store = QdrantStore()
     collection_name = getattr(store, "collection", None)
+    web_cfg = getattr(cfg, "web", None)
 
     point_count = 0
     try:
@@ -97,10 +119,15 @@ def ask(subject_id: str, question: str, top_k: int, config=None) -> dict:
     query_emb = [float(x) for x in query_emb]
     emb_stats = _validate_embedding(query_emb, expected_dim=cfg.embeddings.vector_size)
     hits = store.search(query_emb, subject_id=subject_id, limit=top_k)
+    notes_hits = store.search_notes(query_emb, subject_id=subject_id, limit=top_k)
     filter_retried = False
+    notes_retried = False
     if not hits:
         hits = store.search(query_emb, subject_id=None, limit=top_k)
         filter_retried = True
+    if not notes_hits and subject_id:
+        notes_hits = store.search_notes(query_emb, subject_id=None, limit=top_k)
+        notes_retried = True
     debug = RetrievalDebug(
         collection_name=collection_name,
         selected_subject_id=subject_id,
@@ -112,21 +139,43 @@ def ask(subject_id: str, question: str, top_k: int, config=None) -> dict:
         query_embedding_max=emb_stats["max"],
         query_embedding_mean=emb_stats["mean"],
         query_embedding_has_nan=emb_stats["has_nan"],
-        hit_count_raw=len(hits),
+        hit_count_raw=len(hits) + len(notes_hits),
         hit_count_after_filter=0,  # set below
         top_hits_preview=[],
-        filter_retried_without_subject=filter_retried,
+        filter_retried_without_subject=filter_retried or notes_retried,
+        judge_reason=None,
+        web_queries_attempted=0,
+        web_queries_used=0,
+        web_results_used=0,
+        web_error=None,
     ).to_dict()
-    if not hits:
-        decision = judge.should_search_web(question, [], debug, config=cfg)
+    if not hits and not notes_hits:
+        decision = judge.should_search_web(
+            question,
+            [],
+            debug,
+            config=cfg,
+            force_even_if_rag_strong=getattr(web_cfg, "force_even_if_rag_strong", False) if web_cfg else False,
+        )
         web_citations: List[dict] = []
+        web_results_used = 0
+        web_queries_attempted = 0
         if decision.do_search and getattr(cfg.web, "enabled", False):
             queries = (decision.suggested_queries or [question])[: getattr(cfg.web, "max_web_queries_per_question", 2)]
+            web_queries_attempted = len(queries)
             web_results_all = []
             for q in queries:
                 try:
-                    web_results_all.extend(search_client.search(q, config=cfg))
-                except Exception:
+                    web_results_all.extend(
+                        search_client.search(
+                            q,
+                            config=cfg,
+                            allowlist=getattr(web_cfg, "allowed_domains", []) if web_cfg else [],
+                            blocklist=getattr(web_cfg, "blocked_domains", []) if web_cfg else [],
+                        )
+                    )
+                except Exception as exc:
+                    debug["web_error"] = str(exc)
                     continue
             seen_urls = set()
             snippets = []
@@ -145,6 +194,7 @@ def ask(subject_id: str, question: str, top_k: int, config=None) -> dict:
                         "source": res.source,
                     }
                 )
+            web_results_used = len(web_citations)
             if web_citations:
                 web_context = "\n".join(snippets)[:1200]
                 prompt_template = Template(_load_prompt_with_web())
@@ -159,11 +209,21 @@ def ask(subject_id: str, question: str, top_k: int, config=None) -> dict:
                     "web_citations": web_citations,
                     "context_expanded": 0,
                     "context_chunks": 0,
-                    "debug": debug,
+                    "debug": {
+                        **debug,
+                        "judge_reason": decision.reason,
+                        "web_queries_attempted": web_queries_attempted,
+                        "web_queries_used": web_queries_attempted,
+                        "web_results_used": web_results_used,
+                    },
                     "used_web": True,
                 }
         # web disabled or no results or judge said no
         debug["hit_count_after_filter"] = 0
+        debug["judge_reason"] = decision.reason
+        debug["web_queries_attempted"] = web_queries_attempted
+        debug["web_queries_used"] = web_queries_attempted if web_citations else 0
+        debug["web_results_used"] = web_results_used
         return {
             "answer": "Answer not found in your notes.",
             "citations": [],
@@ -174,8 +234,11 @@ def ask(subject_id: str, question: str, top_k: int, config=None) -> dict:
 
     min_score = getattr(cfg.retrieval, "min_score", 0.0)
     filtered_hits = [h for h in hits if h.get("score") is None or h.get("score", 0) >= min_score]
+    filtered_notes = [h for h in notes_hits if h.get("score") is None or h.get("score", 0) >= min_score]
     if not filtered_hits and hits:
         filtered_hits = hits
+    if not filtered_notes and notes_hits:
+        filtered_notes = notes_hits
 
     try:
         expanded = expand_with_neighbors(
@@ -187,35 +250,57 @@ def ask(subject_id: str, question: str, top_k: int, config=None) -> dict:
     except Exception:
         expanded = filtered_hits
     extra_neighbors = max(0, len(expanded) - len(filtered_hits))
-    context_chunks = expanded
+    notes_limit = min(len(filtered_notes), max(1, top_k // 2 or 1))
+    context_chunks = _dedupe_by_chunk_id(expanded + filtered_notes[:notes_limit])
+    max_context = top_k + getattr(cfg.retrieval, "max_neighbor_chunks", 12) + notes_limit
+    context_chunks = context_chunks[:max_context]
 
     debug.update(
         {
-            "hit_count_after_filter": len(filtered_hits),
+            "hit_count_after_filter": len(filtered_hits) + len(filtered_notes),
             "top_hits_preview": [
                 {
                     "score": _get_hit_field(h, "score"),
                     "page_num": _get_hit_field(h, "page_num"),
                     "chunk_id": _get_hit_field(h, "chunk_id"),
+                    "source_type": _get_hit_field(h, "source_type"),
                     "preview": (_get_hit_field(h, "text") or _get_hit_field(h, "preview") or "")[:80],
                 }
-                for h in filtered_hits[:5]
+                for h in (filtered_hits + filtered_notes)[:5]
             ],
             "min_score": min_score,
         }
     )
 
     # Decide if web search should be used
-    decision = judge.should_search_web(question, filtered_hits, debug, config=cfg)
+    decision = judge.should_search_web(
+        question,
+        filtered_hits + filtered_notes,
+        debug,
+        config=cfg,
+        force_even_if_rag_strong=getattr(web_cfg, "force_even_if_rag_strong", False) if web_cfg else False,
+    )
     web_citations = []
     web_context = ""
+    web_queries_attempted = 0
+    web_results_used = 0
+    web_error = None
     if decision.do_search:
         queries = (decision.suggested_queries or [question])[: getattr(cfg.web, "max_web_queries_per_question", 2)]
+        web_queries_attempted = len(queries)
         web_results_all = []
         for q in queries:
             try:
-                web_results_all.extend(search_client.search(q, config=cfg))
-            except Exception:
+                web_results_all.extend(
+                    search_client.search(
+                        q,
+                        config=cfg,
+                        allowlist=getattr(web_cfg, "allowed_domains", []) if web_cfg else [],
+                        blocklist=getattr(web_cfg, "blocked_domains", []) if web_cfg else [],
+                    )
+                )
+            except Exception as exc:
+                web_error = str(exc)
                 continue
         # Deduplicate by URL
         seen_urls = set()
@@ -231,9 +316,11 @@ def ask(subject_id: str, question: str, top_k: int, config=None) -> dict:
                     "title": res.title,
                     "url": res.url,
                     "quote": res.snippet,
+                    "snippet": res.snippet,
                     "source": res.source,
                 }
             )
+        web_results_used = len(web_citations)
         max_chars = 1200
         web_context = "\n".join(snippets)[:max_chars]
 
@@ -260,17 +347,32 @@ def ask(subject_id: str, question: str, top_k: int, config=None) -> dict:
             continue
         seen_cids.add(cid)
         asset_id = _get_hit_field(chunk, "asset_id")
-        citations.append(
-            {
-                "type": "slide",
-                "asset_id": asset_id,
-                "filename": _get_hit_field(chunk, "source") or source_lookup.get(asset_id) or asset_id,
-                "page": _get_hit_field(chunk, "page_num"),
-                "chunk_id": cid,
-                "quote": (_get_hit_field(chunk, "text") or "")[:240],
-                "image_path": _get_hit_field(chunk, "image_path"),
-            }
-        )
+        if (_get_hit_field(chunk, "source_type") or "").lower() == "notes" or _get_hit_field(chunk, "notes_id"):
+            citations.append(
+                {
+                    "type": "notes",
+                    "asset_id": asset_id,
+                    "notes_id": _get_hit_field(chunk, "notes_id"),
+                    "version": _get_hit_field(chunk, "version"),
+                    "section_title": _get_hit_field(chunk, "section_title"),
+                    "chunk_id": cid,
+                    "quote": (_get_hit_field(chunk, "text") or "")[:240],
+                    "source": _get_hit_field(chunk, "source_label") or _get_hit_field(chunk, "source"),
+                    "source_label": _get_hit_field(chunk, "source_label") or _get_hit_field(chunk, "source"),
+                }
+            )
+        else:
+            citations.append(
+                {
+                    "type": "slide",
+                    "asset_id": asset_id,
+                    "filename": _get_hit_field(chunk, "source") or source_lookup.get(asset_id) or asset_id,
+                    "page": _get_hit_field(chunk, "page_num"),
+                    "chunk_id": cid,
+                    "quote": (_get_hit_field(chunk, "text") or "")[:240],
+                    "image_path": _get_hit_field(chunk, "image_path"),
+                }
+            )
     citations.extend(web_citations)
 
     return {
@@ -279,7 +381,14 @@ def ask(subject_id: str, question: str, top_k: int, config=None) -> dict:
         "web_citations": web_citations,
         "context_expanded": extra_neighbors,
         "context_chunks": len(context_chunks),
-        "debug": debug,
+        "debug": {
+            **debug,
+            "judge_reason": decision.reason,
+            "web_queries_attempted": web_queries_attempted,
+            "web_queries_used": web_queries_attempted if web_citations else 0,
+            "web_results_used": web_results_used,
+            "web_error": web_error,
+        },
         "used_web": decision.do_search and bool(web_citations),
     }
 
