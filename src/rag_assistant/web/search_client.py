@@ -88,7 +88,8 @@ def search(query: str, max_results: Optional[int] = None, config=None, allowlist
     provider = (web_cfg.provider or "serpapi").lower()
     max_res = max_results or web_cfg.max_results
     timeout_s = web_cfg.timeout_s
-    api_key = os.getenv("WEB_API_KEY") or web_cfg.api_key
+    env_api_key = os.getenv("WEB_API_KEY")
+    api_key = env_api_key if env_api_key is not None else web_cfg.api_key
 
     if provider != "serpapi":
         raise WebSearchError(f"Unsupported web provider: {provider}")

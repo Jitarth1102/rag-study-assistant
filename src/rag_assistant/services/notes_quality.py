@@ -64,8 +64,10 @@ def judge_notes(draft_md: str, config, trace: Optional[list] = None, round_num: 
         "seed": getattr(gen_cfg, "seed", None),
         "max_tokens": getattr(gen_cfg, "max_tokens", None),
     }
-    if params.get("seed") is not None and getattr(getattr(cfg, "llm", None), "provider", "").lower() not in {"ollama"}:
-        _trace("[NOTES] warn seed_not_supported provider={}".format(getattr(cfg.llm, "provider", "unknown")))
+    llm_cfg = getattr(cfg, "llm", None) if cfg else None
+    provider = getattr(llm_cfg, "provider", "") if llm_cfg is not None else ""
+    if params.get("seed") is not None and provider.lower() != "ollama":
+        _trace("[NOTES] warn seed_not_supported provider={}".format(provider or "unknown"))
     critique = generate_answer(_judge_prompt().render(draft=draft_md), cfg, **params)
     critique_text = critique or ""
     needs_revision = not ("no major issues" in critique_text.lower())

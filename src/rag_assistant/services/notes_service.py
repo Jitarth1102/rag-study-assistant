@@ -351,7 +351,7 @@ def generate_notes_for_asset(subject_id: str, asset_id: str, config=None, trace:
         target_chars=gen_params.get("target_chars") or 8000,
         min_chars=gen_params.get("min_chars") or 6000,
     )
-    if gen_params.get("seed") is not None and getattr(cfg.llm, "provider", "").lower() not in {"ollama"}:
+    if gen_params.get("seed") is not None and getattr(cfg.llm, "provider", "").lower() != "ollama":
         _trace(trace, f"[NOTES] warn seed_not_supported provider={getattr(cfg.llm, 'provider', 'unknown')}")
     _log(cfg, "[NOTES] LLM generating initial notes")
     _trace(trace, "[NOTES] draft_generate:start")
