@@ -52,6 +52,8 @@ run_sql() {
 }
 
 echo "[reset] deleting db rows"
+run_sql "DELETE FROM notes_chunks WHERE asset_id = '${ASSET_ID}';"
+run_sql "DELETE FROM notes WHERE asset_id = '${ASSET_ID}';"
 run_sql "DELETE FROM asset_index_status WHERE asset_id = '${ASSET_ID}';"
 run_sql "DELETE FROM asset_pages WHERE asset_id = '${ASSET_ID}';"
 run_sql "DELETE FROM asset_ocr_pages WHERE asset_id = '${ASSET_ID}';"

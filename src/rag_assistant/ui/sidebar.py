@@ -9,9 +9,11 @@ from rag_assistant.ui import session_state
 
 # Navigation targets relative to the Streamlit entrypoint
 NAV_LINKS = [
+    ("System Health", "pages/0_System_Health.py"),
     ("Chat", "pages/1_Chat.py"),
     ("Upload", "pages/2_Upload.py"),
     ("Study Tools", "pages/3_Study_Tools.py"),
+    ("Notes", "pages/4_Notes.py"),
 ]
 
 

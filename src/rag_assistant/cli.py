@@ -7,13 +7,14 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from rag_assistant import __version__
 from rag_assistant.config import load_config
 from rag_assistant.services import subject_service
 from rag_assistant.logging import configure_logging, get_logger, get_run_id
 from rag_assistant.ingest.ocr.selftest import run_ocr_selftest
+from rag_assistant.ingest import pipeline
 
 
 logger = get_logger(__name__)
@@ -36,7 +37,13 @@ def build_parser() -> argparse.ArgumentParser:
                 sub.add_argument(arg, **kwargs)
         sub.set_defaults(func=_not_implemented_handler)
 
-    add_stub("ingest", "Ingest study materials", [("--path", {"required": True})])
+    ingest_parser = subparsers.add_parser("ingest", help="Index uploaded assets for a subject")
+    ingest_parser.add_argument("--subject", help="Subject id to ingest")
+    ingest_parser.add_argument("--all-subjects", action="store_true", help="Ingest all subjects")
+    ingest_parser.add_argument("--force", action="store_true", help="Re-run pipeline even if assets are indexed")
+    ingest_parser.add_argument("--limit", type=int, help="Maximum assets to process (total across subjects)")
+    ingest_parser.set_defaults(func=_ingest_handler)
+
     add_stub("ask", "Ask a question", [("question", {"help": "Question to ask"})])
     add_stub("summarize", "Summarize content", [("--subject", {"help": "Subject id"})])
     add_stub("flashcards", "Generate flashcards", [("--count", {"type": int, "default": 10})])
@@ -102,6 +109,65 @@ def _doctor_handler(args: argparse.Namespace) -> None:
         print(json.dumps(output, indent=2))
     except Exception as exc:
         print(json.dumps({"error": str(exc)}, indent=2))
+        sys.exit(1)
+
+
+def _ingest_handler(args: argparse.Namespace) -> None:
+    cfg = load_config()
+    subject_ids: List[str] = []
+    if args.all_subjects:
+        subject_ids = [s["subject_id"] for s in subject_service.list_subjects()]
+        if not subject_ids:
+            print(json.dumps({"error": "No subjects found"}, indent=2))
+            return
+    elif args.subject:
+        subject_ids = [args.subject]
+    else:
+        print(json.dumps({"error": "Provide --subject or --all-subjects"}, indent=2), file=sys.stderr)
+        sys.exit(1)
+
+    remaining: Optional[int] = args.limit
+    results = []
+    any_failures = False
+
+    for sid in subject_ids:
+        subj = subject_service.get_subject(sid)
+        if subj is None:
+            results.append({"subject_id": sid, "error": "Subject not found"})
+            any_failures = True
+            continue
+
+        local_limit = remaining if remaining is not None else None
+        try:
+            summary = pipeline.process_subject_new_assets(sid, cfg, force=args.force, limit=local_limit)
+        except Exception as exc:
+            results.append({"subject_id": sid, "assets_processed": 0, "assets_indexed": 0, "failures": [{"error": str(exc)}]})
+            any_failures = True
+            continue
+
+        processed = summary.get("processed", 0)
+        indexed = summary.get("indexed", 0)
+        failures = [
+            {"asset_id": d.get("asset_id"), "error": d.get("error")}
+            for d in summary.get("details", [])
+            if d.get("stage") == "failed" or d.get("error")
+        ]
+        any_failures = any_failures or bool(failures)
+        results.append(
+            {
+                "subject_id": sid,
+                "assets_processed": processed,
+                "assets_indexed": indexed,
+                "failures": failures,
+            }
+        )
+        if remaining is not None:
+            remaining = max(0, remaining - processed)
+            if remaining == 0:
+                break
+
+    print(json.dumps({"subjects": results}, indent=2))
+    if any_failures:
         sys.exit(1)
 
 

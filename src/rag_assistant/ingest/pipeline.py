@@ -85,11 +85,11 @@ def _upsert_chunks(chunks: List[dict]) -> None:
         )
 
 
-def process_asset(subject_id: str, asset: dict, config=None) -> None:
+def process_asset(subject_id: str, asset: dict, config=None, *, force: bool = False) -> None:
     cfg = config or load_config()
     asset_id = asset["asset_id"]
     status = asset_service.get_index_status(asset_id)
-    current_stage = status["stage"] if status else None
+    current_stage = None if force else (status["stage"] if status else None)
 
     if not Path(asset["stored_path"]).exists():
         _set_stage(asset_id, "missing", error=f"raw file missing on disk: {asset['stored_path']}")
@@ -183,6 +183,7 @@ def process_asset(subject_id: str, asset: dict, config=None) -> None:
                 point_id = make_point_uuid(identity)
                 payloads.append(
                     {
+                        "source_type": "slide",
                         "subject_id": subject_id,
                         "asset_id": asset_id,
                         "page_num": chunk["page_num"],
@@ -207,17 +208,20 @@ def process_asset(subject_id: str, asset: dict, config=None) -> None:
         raise
 
 
-def process_subject_new_assets(subject_id: str, config=None) -> dict:
+def process_subject_new_assets(subject_id: str, config=None, *, force: bool = False, limit: int | None = None) -> dict:
     cfg = config or load_config()
     assets = asset_service.list_assets(subject_id)
-    summary = {"indexed": 0, "skipped_missing": 0, "failed": 0, "details": []}
+    summary = {"indexed": 0, "skipped_missing": 0, "failed": 0, "details": [], "processed": 0}
     for asset in assets:
         status = asset_service.get_index_status(asset["asset_id"])
         stage = status.get("stage") if status else asset.get("status")
-        if stage == "indexed":
+        if stage == "indexed" and not force:
             continue
+        if limit is not None and summary["processed"] >= limit:
+            break
+        summary["processed"] += 1
         try:
-            process_asset(subject_id, asset, cfg)
+            process_asset(subject_id, asset, cfg, force=force)
             latest = asset_service.get_index_status(asset["asset_id"])
             latest_stage = latest.get("stage") if latest else None
             if latest_stage == "missing":

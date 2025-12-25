@@ -21,6 +21,9 @@ def test_answerer_handles_flat_hits(monkeypatch):
                 }
             ]
 
+        def search_notes(self, vector, subject_id, limit):
+            return []
+
     class DummyEmbedder:
         def __init__(self, *args, **kwargs):
             pass
@@ -62,6 +65,9 @@ def test_answerer_handles_nested_payload(monkeypatch):
                     }
                 }
             ]
+
+        def search_notes(self, vector, subject_id, limit):
+            return []
 
     class DummyEmbedder:
         def __init__(self, *args, **kwargs):

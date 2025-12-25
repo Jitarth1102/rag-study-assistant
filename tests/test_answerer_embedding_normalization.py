@@ -10,7 +10,7 @@ def test_query_embedding_normalized_to_list(monkeypatch):
 
         def embed_texts(self, texts):
             # Simulate numpy array object
-            return [SimpleNamespace(tolist=lambda: [0.1, 0.2, 0.3, 0.4])]
+            return [SimpleNamespace(tolist=lambda: [0.1] * 384)]
 
     called = {}
 
@@ -23,6 +23,9 @@ def test_query_embedding_normalized_to_list(monkeypatch):
 
         def search(self, vector, subject_id, limit):
             called["vector"] = vector
+            return []
+
+        def search_notes(self, vector, subject_id, limit):
             return []
 
     monkeypatch.setattr(answerer, "Embedder", lambda *args, **kwargs: DummyEmbedder())
