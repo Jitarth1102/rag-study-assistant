@@ -68,25 +68,42 @@ else:
             stage = status_row.get("stage", status)
             badge = f"status: {stage}"
             ocr_engine_used = status_row.get("ocr_engine")
-            if stage == "missing":
-                st.warning(
-                    f"⚠️ {asset['original_filename']} — file missing on disk (id: {asset['asset_id']}). {badge}",
-                    icon="⚠️",
-                )
-                if status_row.get("error"):
-                    st.caption(status_row["error"])
-            else:
-                st.write(
-                    f"{asset['original_filename']} — {asset['size_bytes']} bytes — {badge} (id: {asset['asset_id']})"
-                )
-                if ocr_engine_used:
-                    st.caption(f"OCR engine: {ocr_engine_used}")
-                if status_row.get("error"):
-                    msg = status_row["error"]
-                    if "OCR engine used" in msg or "fallback OCR" in msg:
-                        st.info(msg)
+            col_a, col_b = st.columns([3, 2])
+            with col_a:
+                if stage == "missing":
+                    st.warning(
+                        f"⚠️ {asset['original_filename']} — file missing on disk (id: {asset['asset_id']}). {badge}",
+                        icon="⚠️",
+                    )
+                    if status_row.get("error"):
+                        st.caption(status_row["error"])
+                else:
+                    st.write(
+                        f"{asset['original_filename']} — {asset['size_bytes']} bytes — {badge} (id: {asset['asset_id']})"
+                    )
+                    if ocr_engine_used:
+                        st.caption(f"OCR engine: {ocr_engine_used}")
+                    if status_row.get("error"):
+                        msg = status_row["error"]
+                        if "OCR engine used" in msg or "fallback OCR" in msg:
+                            st.info(msg)
+                        else:
+                            st.error(f"Error: {msg}")
+            with col_b:
+                del_key = f"del_{asset['asset_id']}"
+                rep_upload = st.file_uploader("Replace file", key=f"replace_{asset['asset_id']}", label_visibility="collapsed")
+                if st.button("Delete", key=del_key):
+                    cleanup_service.remove_assets(subject_id, [asset["asset_id"]], remove_vectors=True)
+                    st.success(f"Deleted {asset['original_filename']}. Please refresh list.")
+                if st.button("Replace", key=f"replace_btn_{asset['asset_id']}"):
+                    if rep_upload is None:
+                        st.warning("Upload a replacement file first.")
                     else:
-                        st.error(f"Error: {msg}")
+                        cleanup_service.remove_assets(subject_id, [asset["asset_id"]], remove_vectors=True)
+                        asset_service.add_asset(subject_id, rep_upload.name, rep_upload.getvalue(), rep_upload.type)
+                        st.success(
+                            f"Replaced {asset['original_filename']} with {rep_upload.name}. Run 'Index new uploads' to re-index and regenerate notes as needed."
+                        )
 
     missing_assets = cleanup_service.list_missing_assets(subject_id)
     if missing_assets:

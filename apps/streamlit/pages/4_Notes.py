@@ -1,11 +1,8 @@
-import textwrap
-from io import BytesIO
-
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont
 
 from rag_assistant.services import asset_service
 from rag_assistant.services import notes_service
+from rag_assistant.services.notes_pdf_service import render_notes_markdown_to_pdf
 from rag_assistant.ui import render_sidebar, session_state
 
 st.set_page_config(page_title="Notes", layout="wide")
@@ -94,13 +91,16 @@ if latest:
     current_markdown = st.session_state.get(content_key, latest.get("markdown", ""))
     pdf_bytes = _markdown_to_pdf_bytes(current_markdown, asset_filename) if current_markdown else b""
     with col3:
-        st.download_button(
-            "Download PDF",
-            data=pdf_bytes,
-            file_name=f"{asset_filename}_notes.pdf",
-            mime="application/pdf",
-            disabled=not bool(pdf_bytes),
-        )
+        try:
+            st.download_button(
+                "Download PDF",
+                data=render_notes_markdown_to_pdf(current_markdown, title=asset_filename),
+                file_name=f"{asset_filename}_notes.pdf",
+                mime="application/pdf",
+                disabled=not bool(current_markdown),
+            )
+        except Exception as exc:
+            st.error(f"Failed to render PDF: {exc}")
 
     if st.session_state[edit_key]:
         st.subheader("Edit notes")
