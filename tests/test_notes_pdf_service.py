@@ -20,6 +20,10 @@ code block
 ```
 
 $$E = mc^2$$
+
+Footnote ref[^w1]
+
+[^w1]: https://example.com (Example Site)
 """
     pdf_bytes = render_notes_markdown_to_pdf(md, title="Sample")
     assert pdf_bytes.startswith(b"%PDF")
@@ -38,3 +42,5 @@ $$E = mc^2$$
         assert not line.startswith("* ")
         assert "```" not in line
         assert "$$" not in line
+        assert "[^" not in line
+    assert "References" in extracted

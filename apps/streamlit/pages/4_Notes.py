@@ -52,6 +52,12 @@ allow_notes_web = st.checkbox(
     "Allow web augmentation for notes", value=st.session_state.get(notes_web_key, True)
 )
 st.session_state[notes_web_key] = allow_notes_web
+mode_key = f"notes_web_mode_{asset_id}"
+notes_web_mode = st.selectbox("Notes web mode", ["auto", "always", "never"], index=0)
+max_queries = st.number_input("Max web queries per note", min_value=1, max_value=5, value=2, step=1)
+max_results = st.number_input("Max web results per query", min_value=1, max_value=10, value=5, step=1)
+allow_domains = st.text_area("Allow domains (one per line)", value="")
+block_domains = st.text_area("Block domains (one per line)", value="")
 col1, col2, col3 = st.columns(3)
 with col1:
     if st.button("Generate Notes", disabled=bool(latest) and not regenerate):
@@ -60,6 +66,11 @@ with col1:
                 cfg = load_config()
                 cfg.notes.debug = debug_enabled
                 cfg.notes.web_augmentation_enabled = allow_notes_web
+                cfg.notes.web_mode = notes_web_mode
+                cfg.notes.max_web_queries_per_notes = int(max_queries)
+                cfg.notes.max_web_results_per_query = int(max_results)
+                cfg.notes.web_allow_domains = [d.strip() for d in allow_domains.splitlines() if d.strip()]
+                cfg.notes.web_block_domains = [d.strip() for d in block_domains.splitlines() if d.strip()]
                 if debug_enabled:
                     cfg._notes_trace = st.session_state[log_key]
                 res = notes_service.generate_notes_for_asset(subject_id, asset_id, config=cfg, trace=st.session_state[log_key] if debug_enabled else None)

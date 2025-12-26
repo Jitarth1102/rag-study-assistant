@@ -5,15 +5,26 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from jinja2 import Template
 
 from rag_assistant.llm.provider import generate_answer
 from rag_assistant.web import search_client
-from rag_assistant.web.query_builder import build_queries_for_gap, build_web_queries
+from rag_assistant.web.query_builder import build_queries_for_gap, build_section_queries, build_web_queries
 
 logger = logging.getLogger("rag_assistant.notes")
+GLOBAL_ANCHORS = [
+    "mdp",
+    "policy",
+    "value function",
+    "q function",
+    "bellman equation",
+    "q-learning",
+    "exploration",
+    "exploitation",
+    "dqn",
+]
 
 
 @dataclass
@@ -24,6 +35,7 @@ class SectionGap:
     what_to_add: str
     priority: int = 1
     suggested_queries: Optional[List[str]] = None
+    missing_topics: Optional[List[str]] = None
 
 
 def _log(cfg, message: str) -> None:
@@ -32,29 +44,82 @@ def _log(cfg, message: str) -> None:
         logger.info(message)
 
 
+def _slugify(text: str) -> str:
+    cleaned = re.sub(r"[^\w\-]+", "-", text.strip().lower()).strip("-")
+    return cleaned or "section"
+
+
+def _extract_keywords(text: str, limit: int = 12) -> List[str]:
+    tokens = re.findall(r"[A-Za-z][\w'-]+", text.lower())
+    stop = {
+        "the",
+        "and",
+        "or",
+        "of",
+        "to",
+        "in",
+        "for",
+        "on",
+        "with",
+        "a",
+        "an",
+        "is",
+        "are",
+        "this",
+        "that",
+        "these",
+        "those",
+        "as",
+        "by",
+        "from",
+        "at",
+        "be",
+        "it",
+        "its",
+    }
+    filtered = [t for t in tokens if t not in stop and len(t) > 2]
+    freq = {}
+    for tok in filtered:
+        freq[tok] = freq.get(tok, 0) + 1
+    sorted_terms = sorted(freq.items(), key=lambda x: (-x[1], x[0]))
+    return [t for t, _ in sorted_terms[:limit]]
+
+
 def split_markdown_sections(md: str) -> List[dict]:
     sections: List[dict] = []
     lines = md.splitlines()
     current_title = "Preamble"
     current_level = 1
     buffer = []
-    idx = 0
+    has_heading = False
     for line in lines:
         heading = re.match(r"^(#{1,6})\s+(.*)", line.strip())
         if heading:
             if buffer:
                 sections.append(
-                    {"title": current_title, "level": current_level, "text": "\n".join(buffer).strip(), "id": f"{current_title.lower().replace(' ', '-')}-{len(sections)}"}
+                    {
+                        "title": current_title,
+                        "level": current_level,
+                        "text": "\n".join(buffer).strip(),
+                        "id": f"{_slugify(current_title)}-{len(sections)}",
+                        "has_heading": has_heading,
+                    }
                 )
                 buffer = []
             current_level = len(heading.group(1))
             current_title = heading.group(2).strip()
+            has_heading = True
             continue
         buffer.append(line)
-        idx += 1
-    if buffer:
+    if buffer or has_heading:
         sections.append(
-            {"title": current_title, "level": current_level, "text": "\n".join(buffer).strip(), "id": f"{current_title.lower().replace(' ', '-')}-{len(sections)}"}
+            {
+                "title": current_title,
+                "level": current_level,
+                "text": "\n".join(buffer).strip(),
+                "id": f"{_slugify(current_title)}-{len(sections)}",
+                "has_heading": has_heading,
+            }
         )
     return sections
 
@@ -63,10 +128,14 @@ def apply_section_patches(md: str, patches: dict) -> str:
     sections = split_markdown_sections(md)
     rebuilt = []
     for sec in sections:
-        if sec["id"] in patches:
-            rebuilt.append(patches[sec["id"]])
+        body = patches.get(sec["id"], sec["text"])
+        if not body:
+            continue
+        # Avoid duplicating headings if the patch already contains one
+        if sec.get("has_heading", False) and not re.match(r"^#{1,6}\s", body.strip()):
+            rebuilt.append(f"{'#' * sec['level']} {sec['title']}\n{body}".strip())
         else:
-            rebuilt.append(sec["text"])
+            rebuilt.append(body.strip())
     return "\n\n".join(rebuilt)
 
 
@@ -134,9 +203,32 @@ def judge_notes(draft_md: str, config, trace: Optional[list] = None, round_num: 
 def detect_section_gaps(markdown: str, slide_context: str, cfg, trace=None) -> List[SectionGap]:
     _trace = trace.append if trace is not None else lambda *a, **k: None
     _trace("[NOTES] gap_detect:start")
-    # placeholder simple heuristic: no structured gaps unless caller monkeypatches
-    _trace("[NOTES] gap_detect:done found=0")
-    return []
+    sections = split_markdown_sections(markdown or "")
+    slide_terms = _extract_keywords(slide_context or "", limit=14)
+    gaps: List[SectionGap] = []
+    for sec in sections:
+        section_terms = _extract_keywords(sec.get("text", ""), limit=12)
+        overlap = 0.0
+        if section_terms or slide_terms:
+            overlap = len(set(section_terms) & set(slide_terms)) / max(len(set(section_terms) | set(slide_terms)), 1)
+        missing_topics = [t for t in slide_terms if t not in section_terms][:6]
+        _trace(
+            f"[NOTES] gap_detect:section title={sec.get('title')} overlap={overlap:.2f} missing={missing_topics}"
+        )
+        if missing_topics and overlap < 0.6:
+            gaps.append(
+                SectionGap(
+                    section_title=sec["title"],
+                    section_anchor=sec.get("id"),
+                    gap_type="missing_topics",
+                    what_to_add="Add detail on: " + ", ".join(missing_topics),
+                    priority=1,
+                    suggested_queries=missing_topics,
+                    missing_topics=missing_topics,
+                )
+            )
+    _trace(f"[NOTES] gap_detect:done found={len(gaps)}")
+    return gaps
 
 
 def _log_web_decision(
@@ -145,8 +237,8 @@ def _log_web_decision(
     *,
     decision: str,
     reason: str,
-    hit_count: Optional[int] = None,
-    best_score: Optional[float] = None,
+    num_sections: Optional[int] = None,
+    num_queries: Optional[int] = None,
 ):
     _trace = trace.append if trace is not None else lambda *a, **k: None
     notes_cfg = getattr(cfg, "notes", None)
@@ -156,13 +248,10 @@ def _log_web_decision(
     allow_count = len(allow) if allow else 0
     block_count = len(block) if block else 0
     _trace(
-        f"[NOTES] judge:done decision={decision} reason={reason} hit_count={hit_count} "
-        f"best_score={best_score} global_web={getattr(web_cfg, 'enabled', False)} "
-        f"notes_web={getattr(notes_cfg, 'web_augmentation_enabled', False)} "
-        f"min_hits_to_skip_web={getattr(web_cfg, 'min_rag_hits_to_skip_web', None)} "
-        f"min_score_to_skip_web={getattr(web_cfg, 'min_rag_score_to_skip_web', None)} "
-        f"force_even_if_rag_strong={getattr(web_cfg, 'force_even_if_rag_strong', None)} "
-        f"allow_domains={allow_count} block_domains={block_count}"
+        f"[NOTES] notes_web_decision: decision={decision} reason={reason} mode={getattr(notes_cfg, 'web_mode', 'auto')} "
+        f"global_web={getattr(web_cfg, 'enabled', False)} notes_web={getattr(notes_cfg, 'web_augmentation_enabled', False)} "
+        f"max_queries_per_note={getattr(notes_cfg, 'max_web_queries_per_notes', None)} max_results_per_query={getattr(notes_cfg, 'max_web_results_per_query', None)} "
+        f"allow_domains={allow_count} block_domains={block_count} num_sections={num_sections} num_queries={num_queries}"
     )
 
 
@@ -173,12 +262,12 @@ def _collect_web_context(
     notes_cfg = getattr(cfg, "notes", None)
     meta = {"used_web": False, "web_queries": 0, "web_results": 0, "web_error": None}
     if not judge_result.get("needs_web"):
-        _log_web_decision(trace, cfg, decision="no_search", reason="judge_no_web", hit_count=None, best_score=None)
+        _log_web_decision(trace, cfg, decision="no_search", reason="judge_no_web", num_sections=None, num_queries=None)
         return "", meta
     if not getattr(getattr(cfg, "web", None), "enabled", False) or not getattr(notes_cfg, "web_augmentation_enabled", False):
         reason = "disabled_global" if not getattr(getattr(cfg, "web", None), "enabled", False) else "disabled_notes"
         _trace(f"[NOTES] web_decision needs_web=True skipped={reason}")
-        _log_web_decision(trace, cfg, decision="no_search", reason=reason, hit_count=None, best_score=None)
+        _log_web_decision(trace, cfg, decision="no_search", reason=reason, num_sections=None, num_queries=None)
         return "", meta
     queries = build_web_queries(
         subject=subject,
@@ -188,10 +277,10 @@ def _collect_web_context(
         max_queries=getattr(notes_cfg, "max_web_queries_per_notes", 2),
     )
     if not queries:
-        _log_web_decision(trace, cfg, decision="no_search", reason="no_queries", hit_count=None, best_score=None)
+        _log_web_decision(trace, cfg, decision="no_search", reason="no_queries", num_sections=None, num_queries=None)
         return "", meta
     _trace(f"[NOTES] web_decision needs_web=True queries={len(queries)}")
-    _log_web_decision(trace, cfg, decision="search", reason="judge_needs_web", hit_count=None, best_score=None)
+    _log_web_decision(trace, cfg, decision="search", reason="judge_needs_web", num_sections=None, num_queries=len(queries))
     results: list = []
     for q in queries:
         try:
@@ -229,13 +318,178 @@ def _collect_web_context(
     return "\n".join(parts), meta
 
 
+def _decide_notes_web(cfg, gaps: List[SectionGap], critique_text: str, trace: Optional[list]) -> dict:
+    """Notes-native decision maker (no RAG hit/score heuristics)."""
+    _trace = trace.append if trace is not None else lambda *a, **k: None
+    notes_cfg = getattr(cfg, "notes", None)
+    web_cfg = getattr(cfg, "web", None)
+    enabled = bool(getattr(notes_cfg, "web_augmentation_enabled", False) and getattr(web_cfg, "enabled", False))
+    mode = getattr(notes_cfg, "web_mode", "auto")
+    critique_lower = (critique_text or "").lower()
+    needs_external = any(
+        kw in critique_lower
+        for kw in [
+            "external",
+            "missing",
+            "define",
+            "definition",
+            "unclear",
+            "needs example",
+            "needs citation",
+            "needs reference",
+            "background",
+            "derive",
+            "compare",
+            "algorithm",
+        ]
+    )
+    do_search = False
+    reason = "disabled" if not enabled else "mode_skip"
+    if enabled:
+        if mode == "never":
+            do_search = False
+            reason = "mode_never"
+        elif mode == "always":
+            do_search = True
+            reason = "mode_always"
+        else:  # auto
+            if gaps:
+                do_search = True
+                reason = "gap_detected"
+            elif needs_external:
+                do_search = True
+                reason = "critique_requires_external"
+            else:
+                reason = "no_gaps_no_external_need"
+    _log_web_decision(trace, cfg, decision="search" if do_search else "no_search", reason=reason, num_sections=len(gaps), num_queries=None)
+    return {"do_search": do_search, "reason": reason, "mode": mode, "needs_external": needs_external}
+
+
+def _section_web_augment(
+    draft_md: str,
+    cfg,
+    gaps: List[SectionGap],
+    trace: Optional[list],
+    slide_context: str = "",
+) -> Tuple[str, dict]:
+    """Run section-targeted web augmentation and return updated markdown + meta."""
+    _trace = trace.append if trace is not None else lambda *a, **k: None
+    notes_cfg = getattr(cfg, "notes", None)
+    max_gap_queries = getattr(notes_cfg, "max_web_queries_per_notes", 2) if notes_cfg else 2
+    sections = split_markdown_sections(draft_md)
+    patches = {}
+    meta = {"used_web": False, "web_queries": 0, "web_results": 0, "web_error": None, "section_citations": {}, "section_queries": {}}
+
+    def _revise_section(sec_text: str, gap: SectionGap, context: str, section_id: str) -> str:
+        _trace(f"[NOTES] patch_section:start section={gap.section_title}")
+        gen_cfg_local = getattr(notes_cfg, "generation", None) if notes_cfg else None
+        prompt = (
+            "Rewrite this section only, keeping original style. Preserve the original heading and core bullets; append a short 'Additional context' subsection (max 6 lines) based on the web context.\n\n"
+            f"Original Section:\n{sec_text}\n\nGap:\n{gap.what_to_add}\n\nExternal Context:\n{context}\n\n"
+            "Return updated section Markdown with inline footnote citations like [^w1], [^w2] and footnotes at the end of the section as [^w1]: URL (Title)."
+        )
+        revised = generate_answer(
+            prompt,
+            cfg,
+            **{
+                "temperature": getattr(gen_cfg_local, "temperature", None) if gen_cfg_local else None,
+                "top_p": getattr(gen_cfg_local, "top_p", None) if gen_cfg_local else None,
+                "seed": getattr(gen_cfg_local, "seed", None) if gen_cfg_local else None,
+                "max_tokens": getattr(gen_cfg_local, "max_tokens", None) if gen_cfg_local else None,
+            },
+        )
+        _trace(f"[NOTES] patch_section:done section={gap.section_title}")
+        return revised
+
+    used_queries = 0
+    for gap in sorted(gaps, key=lambda g: g.priority)[: max_gap_queries]:
+        if used_queries >= max_gap_queries:
+            break
+        section_text = ""
+        sections = split_markdown_sections(draft_md)
+        sec = next((s for s in sections if s["title"] == gap.section_title), None)
+        if sec:
+            section_text = sec.get("text", "")
+        queries = build_section_queries(
+            gap.section_title, section_text, slide_context, max_queries=max_gap_queries - used_queries
+        )
+        meta["section_queries"][gap.section_title] = queries
+        _trace(f"[NOTES] query_build gap={gap.section_title} queries={queries}")
+        if not queries:
+            continue
+        context_parts = []
+        anchors = set(GLOBAL_ANCHORS)
+        anchors.update((gap.missing_topics or []))
+        anchors.update((gap.section_title or "").lower().split())
+        anchors = {a.lower() for a in anchors if a}
+        kept_results = 0
+        gap_queries_used = 0
+        for q in queries:
+            if used_queries >= max_gap_queries:
+                break
+            _trace(f"[NOTES] web:search section=\"{gap.section_title}\" query=\"{q[:80]}\"")
+            try:
+                results = search_client.search(
+                    q,
+                    config=cfg,
+                    allowlist=getattr(notes_cfg, "web_allow_domains", []) or [],
+                    blocklist=getattr(notes_cfg, "web_block_domains", []) or [],
+                    max_results=getattr(notes_cfg, "max_web_results_per_query", 5),
+                )
+            except Exception as exc:  # pragma: no cover - best effort
+                meta["web_error"] = str(exc)
+                _trace(f"[NOTES] gap_web_search:error {exc}")
+                continue
+            used_queries += 1
+            gap_queries_used += 1
+            filtered_results = []
+            for res in results:
+                content = f"{res.title} {res.snippet}".lower()
+                anchor_hits = sum(1 for a in anchors if a and a in content)
+                if anchor_hits < 2 or "definitions in writing" in content:
+                    _trace(f"[NOTES] patch_section:filtered_offtopic url={res.url}")
+                    continue
+                filtered_results.append(res)
+            kept_results += len(filtered_results)
+            meta["section_citations"][gap.section_title] = [r.url for r in filtered_results if getattr(r, "url", None)]
+            _trace(f"[NOTES] web:done section=\"{gap.section_title}\" results={len(filtered_results)} provider={getattr(cfg.web, 'provider', '')}")
+            for idx, res in enumerate(filtered_results, start=1):
+                snippet = (res.snippet or "")[: getattr(notes_cfg, "web_snippet_char_limit", 400)]
+                foot_id = f"w_{_slugify(gap.section_title)}_{idx}"
+                footnote = f"[^{foot_id}]: {res.url} ({res.title})"
+                context_parts.append(f"- {res.title} ({res.url}): {snippet}\n{footnote}")
+        if context_parts and sec:
+            new_text = _revise_section(sec.get("text", ""), gap, "\n".join(context_parts), sec["id"])
+            banned = ["definitions in writing", "role of definitions"]
+            if any(b in (new_text or "").lower() for b in banned):
+                _trace(f"[NOTES] patch_section:filtered_offtopic url=banned_content")
+                continue
+            anchor_hits_new = sum(1 for a in anchors if a and a in (new_text or "").lower())
+            if anchor_hits_new < 2:
+                _trace(f"[NOTES] patch_section:filtered_offtopic url=anchor_check")
+                continue
+            foots = {line for p in context_parts for line in p.splitlines() if line.startswith("[^")}
+            if foots:
+                new_text = new_text + "\n\n" + "\n".join(foots)
+            patches[sec["id"]] = new_text
+            if kept_results > 0:
+                meta["used_web"] = True
+                meta["web_queries"] += gap_queries_used
+                meta["web_results"] += kept_results
+                _trace(f"[NOTES] citations:inserted count={len(context_parts)} section={gap.section_title}")
+                _trace(f"[NOTES] patch_section:applied section={gap.section_title}")
+    if patches:
+        draft_md = apply_section_patches(draft_md, patches)
+    return draft_md, meta
+
+
 def _rescue_web_context(cfg, trace, critique: str, base_query: Optional[str], subject: Optional[str]) -> tuple[str, dict]:
     """Run a bounded rescue web search when still needs revision after round 2."""
     _trace = trace.append if trace is not None else lambda *a, **k: None
     notes_cfg = getattr(cfg, "notes", None)
     meta = {"used_web": False, "web_queries": 0, "web_results": 0, "web_error": None}
     if not getattr(getattr(cfg, "web", None), "enabled", False) or not getattr(notes_cfg, "web_augmentation_enabled", False):
-        _log_web_decision(trace, cfg, decision="no_search", reason="rescue_disabled", hit_count=None, best_score=None)
+        _log_web_decision(trace, cfg, decision="no_search", reason="rescue_disabled", num_sections=None, num_queries=None)
         return "", meta
     queries = build_web_queries(
         subject=subject,
@@ -247,7 +501,7 @@ def _rescue_web_context(cfg, trace, critique: str, base_query: Optional[str], su
     if not queries:
         queries = ["study notes context"][: getattr(notes_cfg, "max_web_queries_per_notes", 2)]
     _trace(f"[NOTES] web_rescue:start reason=needs_revision_after_round2 queries={len(queries)}")
-    _log_web_decision(trace, cfg, decision="search", reason="rescue", hit_count=None, best_score=None)
+    _log_web_decision(trace, cfg, decision="search", reason="rescue", num_sections=None, num_queries=len(queries))
     results = []
     for q in queries:
         try:
@@ -284,7 +538,7 @@ def _rescue_web_context(cfg, trace, critique: str, base_query: Optional[str], su
     return "\n".join(parts), meta
 
 
-def run_quality_loop(draft_md: str, config, trace=None, base_query: Optional[str] = None) -> tuple[str, dict]:
+def run_quality_loop(draft_md: str, config, trace=None, base_query: Optional[str] = None, slide_context: str = "") -> tuple[str, dict]:
     """Run a single critique + revision pass."""
     _trace = trace.append if trace is not None else lambda *a, **k: None
     cfg = config
@@ -303,74 +557,34 @@ def run_quality_loop(draft_md: str, config, trace=None, base_query: Optional[str
     meta["section_citations"] = {}
     meta["section_queries"] = {}
 
-    # Section-driven augmentation before judge
-    gaps = detect_section_gaps(draft_md, "", cfg, trace=trace) or []
-    if gaps:
-        _trace(f"[NOTES] gap_detect:found {len(gaps)}")
-        sections = split_markdown_sections(draft_md)
-        patches = {}
-        used_queries = 0
-
-        def _revise_section(sec_text: str, gap: SectionGap, context: str, section_id: str) -> str:
-            _trace(f"[NOTES] patch_section:start section={gap.section_title}")
-            prompt = (
-                "Rewrite this section only, keeping original style. Address the gap described.\n\n"
-                f"Original Section:\n{sec_text}\n\nGap:\n{gap.what_to_add}\n\nExternal Context:\n{context}\n\n"
-                "Return updated section Markdown with inline footnote citations like [^w1], [^w2] and footnotes at the end of the section as [^w1]: URL (Title)."
-            )
-            revised = generate_answer(prompt, cfg, **params)
-            _trace(f"[NOTES] patch_section:done section={gap.section_title}")
-            return revised
-
-        for gap in sorted(gaps, key=lambda g: g.priority)[: max_gap_queries]:
-            queries = build_queries_for_gap(gap, None, max_queries=max_gap_queries)
-            meta["section_queries"][gap.section_title] = queries
-            _trace(f"[NOTES] query_build gap={gap.section_title} queries={queries}")
-            if not queries:
-                continue
-            context_parts = []
-            for q in queries:
-                if used_queries >= max_gap_queries:
-                    break
-                _trace(f"[NOTES] gap_web_search:start query={q}")
-                try:
-                    results = search_client.search(
-                        q,
-                        config=cfg,
-                        allowlist=getattr(notes_cfg, "web_allow_domains", []) or [],
-                        blocklist=getattr(notes_cfg, "web_block_domains", []) or [],
-                        max_results=getattr(notes_cfg, "max_web_results_per_query", 5),
-                    )
-                except Exception as exc:  # pragma: no cover
-                    _trace(f"[NOTES] gap_web_search:error {exc}")
-                    continue
-                used_queries += 1
-                meta["used_web"] = True
-                meta["web_queries"] += 1
-                meta["web_results"] += len(results)
-                meta["section_citations"][gap.section_title] = [r.url for r in results if getattr(r, "url", None)]
-                _trace(f"[NOTES] gap_web_search:done results={len(results)} provider={getattr(cfg.web, 'provider', '')}")
-                for idx, res in enumerate(results, start=1):
-                    snippet = (res.snippet or "")[: getattr(notes_cfg, "web_snippet_char_limit", 400)]
-                    foot_id = f"w_{gap.section_title.lower().replace(' ', '_')}_{idx}"
-                    footnote = f"[^{foot_id}]: {res.url} ({res.title})"
-                    context_parts.append(f"- {res.title} ({res.url}): {snippet}\n{footnote}")
-            if context_parts:
-                sec = next((s for s in sections if s["title"] == gap.section_title), None)
-                if sec:
-                    new_text = _revise_section(sec["text"], gap, "\n".join(context_parts), sec["id"])
-                    foots = {line for p in context_parts for line in p.splitlines() if line.startswith("[^")}
-                    if foots:
-                        new_text = new_text + "\n\n" + "\n".join(foots)
-                    patches[sec["id"]] = new_text
-                    _trace(f"[NOTES] citations:inserted count={len(context_parts)} section={gap.section_title}")
-                    _trace(f"[NOTES] patch_section:applied section={gap.section_title}")
-        if patches:
-            draft_md = apply_section_patches(draft_md, patches)
-
-    # Round 1 judge
-    judge_result = judge_notes(draft_md, cfg, trace=trace, round_num=1)
     current = draft_md
+    # Section-driven decision (notes-native)
+    gaps = detect_section_gaps(current, slide_context or "", cfg, trace=trace) or []
+    judge_result = judge_notes(current, cfg, trace=trace, round_num=1)
+    web_decision = _decide_notes_web(cfg, gaps, judge_result.get("critique", ""), trace)
+    if web_decision.get("do_search"):
+        if not gaps and split_markdown_sections(current):
+            # fabricate a catch-all gap so we still run targeted search
+            first = split_markdown_sections(current)[0]
+            gaps = [
+                SectionGap(
+                    section_title=first["title"],
+                    section_anchor=first.get("id"),
+                    gap_type="general",
+                    what_to_add="Add definitions or examples to strengthen this section.",
+                    priority=1,
+                    suggested_queries=[judge_result.get("critique", "")],
+                )
+            ]
+        current, section_meta = _section_web_augment(current, cfg, gaps, trace, slide_context=slide_context)
+        # merge meta
+        meta["used_web"] = meta["used_web"] or section_meta.get("used_web", False)
+        meta["web_queries"] += section_meta.get("web_queries", 0)
+        meta["web_results"] += section_meta.get("web_results", 0)
+        meta["web_error"] = meta["web_error"] or section_meta.get("web_error")
+        meta["section_citations"].update(section_meta.get("section_citations", {}))
+        meta["section_queries"].update(section_meta.get("section_queries", {}))
+
     web_context = ""
     web_meta = {"used_web": False, "web_queries": 0, "web_results": 0, "web_error": None}
 
@@ -398,11 +612,12 @@ def run_quality_loop(draft_md: str, config, trace=None, base_query: Optional[str
         return revised
 
     if judge_result.get("needs_revision", True):
-        web_context, web_meta = _collect_web_context(judge_result, cfg, trace, base_query=base_query)
-        meta["used_web"] = meta["used_web"] or web_meta.get("used_web", False)
-        meta["web_queries"] += web_meta.get("web_queries", 0)
-        meta["web_results"] += web_meta.get("web_results", 0)
-        meta["web_error"] = meta["web_error"] or web_meta.get("web_error")
+        if not meta["used_web"]:
+            web_context, web_meta = _collect_web_context(judge_result, cfg, trace, base_query=base_query)
+            meta["used_web"] = meta["used_web"] or web_meta.get("used_web", False)
+            meta["web_queries"] += web_meta.get("web_queries", 0)
+            meta["web_results"] += web_meta.get("web_results", 0)
+            meta["web_error"] = meta["web_error"] or web_meta.get("web_error")
         current = _revise(current, judge_result.get("critique", ""), round_num=1)
 
     # Round 2 judge

@@ -60,7 +60,7 @@ def test_generate_notes_creates_rows(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         calls["llm"].append(prompt)
         return "## Heading\nSome bullet point"
 
-    def fake_quality(draft, cfg, trace=None, base_query=None):
+    def fake_quality(draft, cfg, trace=None, base_query=None, slide_context=None):
         calls["revise"].append(draft)
         return draft + "\n\n## Improvements\n- Added clarity", {"used_web": False, "web_queries": 0, "web_results": 0, "web_error": None}
 
@@ -273,12 +273,12 @@ def test_notes_web_augmentation_runs(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     res = notes_service.generate_notes_for_asset(subject["subject_id"], asset["asset_id"], config=cfg, trace=trace)
     assert res["chunk_count"] > 0
-    assert search_calls["calls"] == 1
-    assert any("web_search:start" in m for m in trace)
+    assert search_calls["calls"] >= 1
+    assert any("web:search" in m for m in trace)
     assert any("External Context" in p for p in prompts)
     assert any("judge_review:start round=1" in m for m in trace)
     assert any("judge_review:start round=2" in m for m in trace)
-    assert any("judge:done decision=search" in m for m in trace)
+    assert any("notes_web_decision" in m for m in trace)
 
 
 def test_notes_web_augmentation_skipped_when_disabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -444,15 +444,136 @@ def test_notes_web_rescue_after_round2(monkeypatch: pytest.MonkeyPatch, tmp_path
     monkeypatch.setattr(notes_quality, "judge_notes", fake_judge)
     monkeypatch.setattr(notes_quality, "generate_answer", fake_generate_answer)
     monkeypatch.setattr(notes_quality.search_client, "search", fake_search)
+    monkeypatch.setattr(notes_quality, "detect_section_gaps", lambda *a, **k: [])
 
     res = notes_service.generate_notes_for_asset(subject["subject_id"], asset["asset_id"], config=cfg, trace=trace)
     assert res["used_web"] is True
     assert search_calls["calls"] == 1
-    assert any("rescue_with_web_context" in m for m in trace)
+    assert any("rescue_with_web_context" in m or "web_rescue" in m for m in trace)
     assert any("with_web_context=True" in m for m in trace)
     assert any("web_rescue:search:done" in m for m in trace)
 
 
+def test_notes_web_mode_always_triggers_search(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    cfg, subject, asset, db_path = _setup_subject_and_asset(tmp_path, monkeypatch)
+    cfg.web.enabled = True
+    cfg.notes.web_augmentation_enabled = True
+    cfg.notes.web_mode = "always"
+    trace: list[str] = []
+
+    class DummyEmbedder:
+        def embed_texts(self, texts):
+            return [[0.6] * 2 for _ in texts]
+
+    class DummyStore:
+        def delete_by_notes_id(self, notes_id):
+            pass
+
+        def upsert_chunks(self, vectors, payloads, ids):
+            pass
+
+    monkeypatch.setattr(notes_service, "Embedder", lambda *a, **k: DummyEmbedder())
+    monkeypatch.setattr(notes_service, "QdrantStore", lambda: DummyStore())
+    monkeypatch.setattr(notes_service, "generate_answer", lambda prompt, cfg, **kwargs: "## Draft\nBody")
+
+    def fake_detect(markdown, slide_context, cfg, trace=None):
+        return [SectionGap(section_title="Draft", section_anchor=None, gap_type="missing", what_to_add="Add example", priority=1, suggested_queries=["example gap"])]
+
+    monkeypatch.setattr(notes_quality, "generate_answer", lambda prompt, cfg, **kwargs: "Rewritten Section")
+    def fake_search(query, config=None, allowlist=None, blocklist=None, max_results=None):
+        return [WebResult(title="t", url="http://example.com", snippet="snippet", source="example.com")]
+
+    monkeypatch.setattr(notes_quality, "detect_section_gaps", fake_detect)
+    monkeypatch.setattr(notes_quality.search_client, "search", fake_search)
+
+    res = notes_service.generate_notes_for_asset(subject["subject_id"], asset["asset_id"], config=cfg, trace=trace)
+    assert res["used_web"] is True
+    assert any("notes_web_decision" in m for m in trace)
+    assert any("web:search" in m for m in trace)
+
+
+def test_notes_web_mode_never(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    cfg, subject, asset, db_path = _setup_subject_and_asset(tmp_path, monkeypatch)
+    cfg.web.enabled = True
+    cfg.notes.web_augmentation_enabled = True
+    cfg.notes.web_mode = "never"
+    trace: list[str] = []
+
+    class DummyEmbedder:
+        def embed_texts(self, texts):
+            return [[0.6] * 2 for _ in texts]
+
+    class DummyStore:
+        def delete_by_notes_id(self, notes_id):
+            pass
+
+        def upsert_chunks(self, vectors, payloads, ids):
+            pass
+
+    monkeypatch.setattr(notes_service, "Embedder", lambda *a, **k: DummyEmbedder())
+    monkeypatch.setattr(notes_service, "QdrantStore", lambda: DummyStore())
+    monkeypatch.setattr(notes_service, "generate_answer", lambda prompt, cfg, **kwargs: "## Draft\nBody")
+
+    def fake_detect(markdown, slide_context, cfg, trace=None):
+        return [SectionGap(section_title="Draft", section_anchor=None, gap_type="missing", what_to_add="Add example", priority=1, suggested_queries=["example gap"])]
+
+    monkeypatch.setattr(notes_quality, "generate_answer", lambda prompt, cfg, **kwargs: "Rewritten Section")
+    def fake_search(query, config=None, allowlist=None, blocklist=None, max_results=None):
+        assert False, "search should not run in mode=never"
+
+    monkeypatch.setattr(notes_quality, "detect_section_gaps", fake_detect)
+    monkeypatch.setattr(notes_quality.search_client, "search", fake_search)
+
+    res = notes_service.generate_notes_for_asset(subject["subject_id"], asset["asset_id"], config=cfg, trace=trace)
+    assert res["used_web"] is False
+    assert any("notes_web_decision" in m for m in trace)
+
+def test_notes_web_auto_triggers_from_critique(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    cfg, subject, asset, db_path = _setup_subject_and_asset(tmp_path, monkeypatch)
+    cfg.web.enabled = True
+    cfg.notes.web_augmentation_enabled = True
+    cfg.notes.web_mode = "auto"
+    trace: list[str] = []
+
+    class DummyEmbedder:
+        def embed_texts(self, texts):
+            return [[0.61] * 2 for _ in texts]
+
+    class DummyStore:
+        def delete_by_notes_id(self, notes_id):
+            pass
+
+        def upsert_chunks(self, vectors, payloads, ids):
+            pass
+
+    monkeypatch.setattr(notes_service, "Embedder", lambda *a, **k: DummyEmbedder())
+    monkeypatch.setattr(notes_service, "QdrantStore", lambda: DummyStore())
+    monkeypatch.setattr(notes_service, "generate_answer", lambda prompt, cfg, **kwargs: "## Draft\nBody")
+
+    def fake_detect(markdown, slide_context, cfg, trace=None):
+        return []  # rely on critique trigger
+
+    def fake_judge(draft_md, config, trace=None, round_num=1):
+        if trace is not None:
+            trace.append(f"[NOTES] judge_review:start round={round_num}")
+        return {"needs_revision": True, "critique": "needs citation and external background", "needs_web": False, "suggested_queries": []}
+
+    search_calls = {"count": 0}
+
+    def fake_search(query, config=None, allowlist=None, blocklist=None, max_results=None):
+        search_calls["count"] += 1
+        return [WebResult(title="t", url="http://critique.com", snippet="snippet", source="critique.com")]
+
+    monkeypatch.setattr(notes_quality, "detect_section_gaps", fake_detect)
+    monkeypatch.setattr(notes_quality, "judge_notes", fake_judge)
+    monkeypatch.setattr(notes_quality, "generate_answer", lambda prompt, cfg, **kwargs: "## Revised with web\nBody")
+    monkeypatch.setattr(notes_quality.search_client, "search", fake_search)
+
+    res = notes_service.generate_notes_for_asset(subject["subject_id"], asset["asset_id"], config=cfg, trace=trace)
+    assert res["used_web"] is True
+    assert search_calls["count"] > 0
+    assert any("notes_web_decision" in m for m in trace)
+    assert any("web:search" in m for m in trace)
 def test_section_gap_patch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     cfg, subject, asset, db_path = _setup_subject_and_asset(tmp_path, monkeypatch)
     cfg.web.enabled = True
@@ -475,7 +596,7 @@ def test_section_gap_patch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(notes_service, "generate_answer", lambda prompt, cfg, **kwargs: "## Draft\nBody")
 
     def fake_generate_answer(prompt, cfg, **kwargs):
-        return "Rewritten Section with citations [^1]"
+        return "Policy details in MDP with citations [^1]"
 
     def fake_detect(markdown, slide_context, cfg, trace=None):
         return [
@@ -483,14 +604,15 @@ def test_section_gap_patch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
                 section_title="Draft",
                 section_anchor=None,
                 gap_type="missing",
-                what_to_add="Add example",
+                what_to_add="Add example about policy mdp",
                 priority=1,
-                suggested_queries=["example gap"],
+                suggested_queries=["policy mdp example"],
+                missing_topics=["policy", "mdp"],
             )
         ]
 
     def fake_search(query, config=None, allowlist=None, blocklist=None, max_results=None):
-        return [WebResult(title="t", url="http://example.com", snippet="snippet", source="example.com")]
+        return [WebResult(title="Policy in MDP", url="http://example.com", snippet="policy and mdp example", source="example.com")]
 
     monkeypatch.setattr(notes_quality, "generate_answer", fake_generate_answer)
     monkeypatch.setattr(notes_quality, "detect_section_gaps", fake_detect)
@@ -530,7 +652,7 @@ def test_regenerate_notes_runs_quality_loop(monkeypatch: pytest.MonkeyPatch, tmp
     monkeypatch.setattr(notes_service, "QdrantStore", lambda: store)
     monkeypatch.setattr(notes_service, "generate_answer", lambda prompt, cfg, **kwargs: "## Draft\nBody")
 
-    def fake_quality(draft, cfg, trace=None, base_query=None):
+    def fake_quality(draft, cfg, trace=None, base_query=None, slide_context=None):
         calls["revise"] += 1
         return draft + "\n\nMore detail", {"used_web": False, "web_queries": 0, "web_results": 0, "web_error": None}
 
@@ -572,7 +694,7 @@ def test_update_notes_increments_version(monkeypatch: pytest.MonkeyPatch, tmp_pa
     monkeypatch.setattr(notes_service, "QdrantStore", lambda: store)
     monkeypatch.setattr(notes_service, "generate_answer", lambda prompt, cfg, **kwargs: "## Intro\nDetails")
 
-    def fake_quality(draft, cfg, trace=None, base_query=None):
+    def fake_quality(draft, cfg, trace=None, base_query=None, slide_context=None):
         calls["revise"] += 1
         return draft, {"used_web": False, "web_queries": 0, "web_results": 0, "web_error": None}
 
@@ -620,7 +742,7 @@ def test_web_augmentation_bounded(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     monkeypatch.setattr(
         notes_service,
         "run_quality_loop",
-        lambda draft, cfg, trace=None, base_query=None: (
+        lambda draft, cfg, trace=None, base_query=None, slide_context=None: (
             draft,
             {"used_web": False, "web_queries": 0, "web_results": 0, "web_error": None},
         ),
@@ -668,7 +790,7 @@ def test_diff_preserves_labels_for_unchanged(monkeypatch: pytest.MonkeyPatch, tm
     monkeypatch.setattr(
         notes_service,
         "run_quality_loop",
-        lambda draft, cfg, trace=None, base_query=None: (
+        lambda draft, cfg, trace=None, base_query=None, slide_context=None: (
             draft,
             {"used_web": False, "web_queries": 0, "web_results": 0, "web_error": None},
         ),
@@ -686,3 +808,99 @@ def test_diff_preserves_labels_for_unchanged(monkeypatch: pytest.MonkeyPatch, tm
     assert "Generated Notes" in labels  # unchanged section retains original provenance
     # ensure old vectors removed before upsert
     assert initial["notes_id"] in store.deleted
+
+
+def test_section_citations_flow_to_payload(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    cfg, subject, asset, db_path = _setup_subject_and_asset(tmp_path, monkeypatch)
+    cfg.web.enabled = True
+    cfg.notes.web_augmentation_enabled = True
+    trace: list[str] = []
+
+    class DummyEmbedder:
+        def embed_texts(self, texts):
+            return [[0.45] * 2 for _ in texts]
+
+    class DummyStore:
+        def __init__(self):
+            self.payloads = []
+
+        def delete_by_notes_id(self, notes_id):
+            pass
+
+        def upsert_chunks(self, vectors, payloads, ids):
+            self.payloads = payloads
+
+    store = DummyStore()
+    monkeypatch.setattr(notes_service, "Embedder", lambda *a, **k: DummyEmbedder())
+    monkeypatch.setattr(notes_service, "QdrantStore", lambda: DummyStore())
+    monkeypatch.setattr(notes_service, "generate_answer", lambda prompt, cfg, **kwargs: "## Draft\nBody")
+
+    def fake_quality(draft, cfg, trace=None, base_query=None, slide_context=None):
+        meta = {
+            "used_web": True,
+            "web_queries": 1,
+            "web_results": 1,
+            "web_error": None,
+            "section_citations": {"Draft": ["http://example.com/ref"]},
+            "section_queries": {"Draft": ["example"]},
+        }
+        return draft, meta
+
+    monkeypatch.setattr(notes_service, "run_quality_loop", fake_quality)
+    monkeypatch.setattr(notes_service, "QdrantStore", lambda: store)
+    res = notes_service.generate_notes_for_asset(subject["subject_id"], asset["asset_id"], config=cfg, trace=trace)
+    assert res["chunk_count"] > 0
+    row = execute(db_path, "SELECT meta_json FROM notes WHERE notes_id = ?;", (res["notes_id"],), fetchone=True)
+    assert row and "section_citations" in (row["meta_json"] or "")
+    assert any(p.get("web_urls") for p in store.payloads)
+
+
+def test_offtopic_web_results_filtered(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    cfg, subject, asset, db_path = _setup_subject_and_asset(tmp_path, monkeypatch)
+    cfg.web.enabled = True
+    cfg.notes.web_augmentation_enabled = True
+    trace: list[str] = []
+
+    class DummyEmbedder:
+        def embed_texts(self, texts):
+            return [[0.46] * 2 for _ in texts]
+
+    class DummyStore:
+        def delete_by_notes_id(self, notes_id):
+            pass
+
+        def upsert_chunks(self, vectors, payloads, ids):
+            pass
+
+    monkeypatch.setattr(notes_service, "Embedder", lambda *a, **k: DummyEmbedder())
+    monkeypatch.setattr(notes_service, "QdrantStore", lambda: DummyStore())
+    monkeypatch.setattr(notes_service, "generate_answer", lambda prompt, cfg, **kwargs: "## Draft\nBody")
+
+    def fake_detect(markdown, slide_context, cfg, trace=None):
+        return [
+            SectionGap(
+                section_title="Policy π",
+                section_anchor=None,
+                gap_type="missing",
+                what_to_add="Add policy details",
+                priority=1,
+                suggested_queries=["policy mdp"],
+                missing_topics=["policy", "mdp"],
+            )
+        ]
+
+    def fake_judge(draft_md, config, trace=None, round_num=1):
+        return {"needs_revision": False, "critique": "", "needs_web": False, "suggested_queries": []}
+
+    def fake_search(query, config=None, allowlist=None, blocklist=None, max_results=None):
+        return [WebResult(title="Definitions in Writing", url="http://offtopic.com", snippet="writing definitions", source="offtopic.com")]
+
+    monkeypatch.setattr(notes_quality, "detect_section_gaps", fake_detect)
+    monkeypatch.setattr(notes_quality, "judge_notes", fake_judge)
+    monkeypatch.setattr(notes_quality.search_client, "search", fake_search)
+    monkeypatch.setattr(notes_quality, "generate_answer", lambda prompt, cfg, **kwargs: "## Revised\nStill on topic")
+
+    res = notes_service.generate_notes_for_asset(subject["subject_id"], asset["asset_id"], config=cfg, trace=trace)
+    assert res["used_web"] is False
+    assert not any("patch_section:applied" in m for m in trace)
+    assert any("filtered_offtopic" in m for m in trace)

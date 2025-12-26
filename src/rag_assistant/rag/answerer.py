@@ -341,6 +341,7 @@ def ask(subject_id: str, question: str, top_k: int, config=None) -> dict:
 
     citations = []
     seen_cids = set()
+    seen_web_urls = set()
     for chunk in context_chunks:
         cid = _get_hit_field(chunk, "chunk_id") or f"{_get_hit_field(chunk, 'asset_id')}:{_get_hit_field(chunk, 'page_num')}:{_get_hit_field(chunk, 'start_block')}"
         if cid in seen_cids:
@@ -361,6 +362,21 @@ def ask(subject_id: str, question: str, top_k: int, config=None) -> dict:
                     "source_label": _get_hit_field(chunk, "source_label") or _get_hit_field(chunk, "source"),
                 }
             )
+            web_urls = _get_hit_field(chunk, "web_urls") or []
+            for url in web_urls:
+                if not url or url in seen_web_urls:
+                    continue
+                seen_web_urls.add(url)
+                citations.append(
+                    {
+                        "type": "web",
+                        "url": url,
+                        "title": _get_hit_field(chunk, "section_title") or "Notes reference",
+                        "quote": (_get_hit_field(chunk, "text") or "")[:160],
+                        "snippet": (_get_hit_field(chunk, "text") or "")[:160],
+                        "source": _get_hit_field(chunk, "source_label") or "Notes",
+                    }
+                )
         else:
             citations.append(
                 {

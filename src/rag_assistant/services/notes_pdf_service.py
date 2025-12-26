@@ -61,14 +61,8 @@ def _parse_markdown(md: str) -> List[Block]:
         ordered_match = re.match(r"^\s*\d+\.\s+(.*)", line)
         hr_match = re.match(r"^\s*(---|\*\*\*|___)\s*$", line)
 
-        if heading_match:
-            if paragraph:
-                blocks.append(("paragraph", {"text": " ".join(paragraph)}))
-                paragraph = []
-            level = min(len(heading_match.group(1)), 3)
-            text = _strip_math_tokens(heading_match.group(2).strip())
-            blocks.append(("heading", {"level": level, "text": text}))
         line_no_math = _strip_math_tokens(line)
+        line_no_math = re.sub(r"\[\^[^\]]+\]", "", line_no_math)
 
         if heading_match:
             if paragraph:

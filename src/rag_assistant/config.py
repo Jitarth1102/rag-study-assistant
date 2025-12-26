@@ -82,6 +82,7 @@ class NotesConfig(BaseModel):
     debug: bool = Field(default=False)
     generation: NotesGenerationConfig = Field(default_factory=NotesGenerationConfig)
     web_augmentation_enabled: bool = Field(default=True)
+    web_mode: str = Field(default="auto")  # auto | always | never
     max_web_queries_per_notes: int = Field(default=2)
     max_web_results_per_query: int = Field(default=5)
     web_snippet_char_limit: int = Field(default=400)

@@ -186,17 +186,21 @@ def _rebuild_chunks(
     version: int,
     *,
     chunk_labels: List[str] | None = None,
+    section_citations: dict | None = None,
 ) -> List[dict]:
     execute(asset_service.get_db_path(), "DELETE FROM notes_chunks WHERE notes_id = ?;", (notes_id,))
     chunks = _chunk_markdown(markdown, notes_id, chunk_char_limit)
     now = time.time()
     labels_iter = iter(chunk_labels or [])
+    section_citations = section_citations or {}
     for ch in chunks:
         ch["version"] = version
         try:
             ch["source_label"] = next(labels_iter)
         except StopIteration:
             pass
+        if ch.get("section_title"):
+            ch["web_urls"] = section_citations.get(ch["section_title"])
         execute(
             asset_service.get_db_path(),
             """
@@ -245,6 +249,7 @@ def _embed_and_upsert_notes(
                 "section_title": chunk.get("section_title"),
                 "text": chunk["text"],
                 "preview": chunk["text"][:240],
+                "web_urls": chunk.get("web_urls") or [],
             }
         )
         ids.append(make_point_uuid(f"notes:{chunk['notes_chunk_id']}"))
@@ -358,7 +363,13 @@ def generate_notes_for_asset(subject_id: str, asset_id: str, config=None, trace:
     draft_md = generate_answer(prompt, cfg, **gen_params)
     _trace(trace, f"[NOTES] draft_generate:done chars={len(draft_md)}")
     _log(cfg, "[NOTES] reviser improving notes")
-    markdown, quality_meta = run_quality_loop(draft_md, cfg, trace=trace, base_query=asset.get("original_filename") or asset_id)
+    markdown, quality_meta = run_quality_loop(
+        draft_md,
+        cfg,
+        trace=trace,
+        base_query=asset.get("original_filename") or asset_id,
+        slide_context=slides_context,
+    )
 
     notes_id = existing["notes_id"] if existing else uuid.uuid4().hex
     version = int(existing["version"]) + 1 if existing else 1
@@ -368,6 +379,8 @@ def generate_notes_for_asset(subject_id: str, asset_id: str, config=None, trace:
         "queries_attempted": web["queries_attempted"] + quality_meta.get("web_queries", 0),
         "web_error": web["error"] or quality_meta.get("web_error"),
         "quality_web_results": quality_meta.get("web_results", 0),
+        "section_citations": quality_meta.get("section_citations", {}),
+        "section_queries": quality_meta.get("section_queries", {}),
     }
     _store_notes(notes_id, subject_id, asset_id, markdown, version=version, generated_by="llm", meta=meta)
     chunk_limit = min(getattr(cfg.ingest, "max_chunk_chars", 800), 1200)
@@ -380,6 +393,7 @@ def generate_notes_for_asset(subject_id: str, asset_id: str, config=None, trace:
         chunk_limit,
         version,
         chunk_labels=[default_label] * len(_chunk_markdown(markdown, notes_id, chunk_limit)),
+        section_citations=meta.get("section_citations") or {},
     )
     _log(cfg, f"[NOTES] chunking notes chunks={len(note_chunks)}")
     _trace(trace, f"[NOTES] chunking notes chunks={len(note_chunks)}")
@@ -469,7 +483,14 @@ def update_notes(notes_id: str, new_markdown: str, edited_by: str = "user", conf
 
     chunk_limit = min(getattr(cfg.ingest, "max_chunk_chars", 800), 1200)
     note_chunks = _rebuild_chunks(
-        notes_id, subject_id, asset_id, new_markdown, chunk_limit, version, chunk_labels=resolved_labels
+        notes_id,
+        subject_id,
+        asset_id,
+        new_markdown,
+        chunk_limit,
+        version,
+        chunk_labels=resolved_labels,
+        section_citations=meta.get("section_citations") or {},
     )
     _log(cfg, f"[NOTES] chunking notes chunks={len(note_chunks)}")
     _trace(trace, f"[NOTES] chunking notes chunks={len(note_chunks)}")
@@ -499,7 +520,9 @@ def save_user_notes(subject_id: str, asset_id: str, markdown: str, config=None) 
     meta["chunk_labels"] = [{"text": ch["text"], "label": lbl} for ch, lbl in zip(temp_chunks, labels)]
     _store_notes(notes_id, subject_id, asset_id, markdown, version=version, generated_by="user", meta=meta)
     chunk_limit = min(getattr(cfg.ingest, "max_chunk_chars", 800), 1200)
-    note_chunks = _rebuild_chunks(notes_id, subject_id, asset_id, markdown, chunk_limit, version, chunk_labels=labels)
+    note_chunks = _rebuild_chunks(
+        notes_id, subject_id, asset_id, markdown, chunk_limit, version, chunk_labels=labels, section_citations={}
+    )
     chunk_count = _embed_and_upsert_notes(
         note_chunks, subject_id, asset_id, notes_id, generated_by="user", version=version, cfg=cfg, trace=trace
     )
@@ -521,7 +544,16 @@ def reindex_notes(notes_id: str, config=None) -> dict:
     meta = json.loads(meta_json) if meta_json else {}
     labels = [entry.get("label", "Generated Notes") for entry in meta.get("chunk_labels", [])]
     chunk_limit = min(getattr(cfg.ingest, "max_chunk_chars", 800), 1200)
-    note_chunks = _rebuild_chunks(notes_id, subject_id, asset_id, markdown, chunk_limit, version, chunk_labels=labels)
+    note_chunks = _rebuild_chunks(
+        notes_id,
+        subject_id,
+        asset_id,
+        markdown,
+        chunk_limit,
+        version,
+        chunk_labels=labels,
+        section_citations=meta.get("section_citations") or {},
+    )
     chunk_count = _embed_and_upsert_notes(
         note_chunks,
         subject_id,
