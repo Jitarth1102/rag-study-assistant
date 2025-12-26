@@ -358,15 +358,16 @@ def generate_notes_for_asset(subject_id: str, asset_id: str, config=None, trace:
     draft_md = generate_answer(prompt, cfg, **gen_params)
     _trace(trace, f"[NOTES] draft_generate:done chars={len(draft_md)}")
     _log(cfg, "[NOTES] reviser improving notes")
-    markdown = run_quality_loop(draft_md, cfg, trace=trace)
+    markdown, quality_meta = run_quality_loop(draft_md, cfg, trace=trace, base_query=asset.get("original_filename") or asset_id)
 
     notes_id = existing["notes_id"] if existing else uuid.uuid4().hex
     version = int(existing["version"]) + 1 if existing else 1
     meta = {
-        "used_web": web["used_web"],
+        "used_web": web["used_web"] or quality_meta.get("used_web", False),
         "web_citations": web["citations"],
-        "queries_attempted": web["queries_attempted"],
-        "web_error": web["error"],
+        "queries_attempted": web["queries_attempted"] + quality_meta.get("web_queries", 0),
+        "web_error": web["error"] or quality_meta.get("web_error"),
+        "quality_web_results": quality_meta.get("web_results", 0),
     }
     _store_notes(notes_id, subject_id, asset_id, markdown, version=version, generated_by="llm", meta=meta)
     chunk_limit = min(getattr(cfg.ingest, "max_chunk_chars", 800), 1200)
@@ -389,18 +390,18 @@ def generate_notes_for_asset(subject_id: str, asset_id: str, config=None, trace:
     _trace(trace, f"[NOTES] persist:notes_saved notes_id={notes_id} version={version}")
     _trace(
         trace,
-        f"[NOTES] done generate used_web={web['used_web']} web_queries={web['queries_attempted']} web_results={len(web['citations'])}",
+        f"[NOTES] done generate used_web={meta['used_web']} web_queries={meta['queries_attempted']} web_results={meta.get('quality_web_results', len(web['citations']))}",
     )
     _log(
         cfg,
-        f"[NOTES] done generate used_web={web['used_web']} web_queries={web['queries_attempted']} web_results={len(web['citations'])}",
+        f"[NOTES] done generate used_web={meta['used_web']} web_queries={meta['queries_attempted']} web_results={meta.get('quality_web_results', len(web['citations']))}",
     )
 
     return {
         "notes_id": notes_id,
         "version": version,
-        "used_web": web["used_web"],
-        "web_citations_count": len(web["citations"]),
+        "used_web": meta["used_web"],
+        "web_citations_count": len(web["citations"]) + meta.get("quality_web_results", 0),
         "chunk_count": chunk_count,
     }
 

@@ -118,6 +118,17 @@ def _add_textbox(page, rect, text: str, size: int = 11, font: str = "helv", alig
 
 def render_notes_markdown_to_pdf(markdown_text: str, title: str | None = None) -> bytes:
     """Render Markdown into a PDF and return PDF bytes."""
+    footnotes: List[str] = []
+    cleaned_lines: List[str] = []
+    for ln in (markdown_text or "").splitlines():
+        if ln.strip().startswith("[^"):
+            # strip leading [^id]:
+            cleaned = re.sub(r"^\[\^([^\]]+)\]:\s*", r"\1: ", ln).strip()
+            if cleaned:
+                footnotes.append(cleaned)
+        else:
+            cleaned_lines.append(ln)
+    markdown_text = "\n".join(cleaned_lines)
     doc = fitz.open()
     page = doc.new_page()
     width, height = page.rect.width, page.rect.height
@@ -241,6 +252,11 @@ def render_notes_markdown_to_pdf(markdown_text: str, title: str | None = None) -
             add_hr()
         else:
             add_paragraph(str(data), size=11, font="helv", leading=14)
+    if footnotes:
+        add_paragraph("References", size=14, font="helv", leading=16)
+        for ref in footnotes:
+            add_paragraph(ref, size=10, font="helv", leading=12, indent=12)
+    _trace = None
 
     buf = io.BytesIO()
     doc.save(buf)

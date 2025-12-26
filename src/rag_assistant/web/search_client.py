@@ -1,4 +1,4 @@
-"""Web search client (SerpAPI) with safe defaults and clear results."""
+"""Web search client (Tavily default, SerpAPI optional) with safe defaults and clear results."""
 
 from __future__ import annotations
 
@@ -79,22 +79,53 @@ def _serpapi_search(query: str, api_key: str, max_results: int, timeout_s: int) 
     return results
 
 
+def _tavily_search(query: str, api_key: str, max_results: int, timeout_s: int) -> List[WebResult]:
+    if not api_key:
+        raise WebSearchError("Tavily key missing; set TAVILY_API_KEY or web.api_key.")
+    payload = {
+        "api_key": api_key,
+        "query": query,
+        "max_results": max_results,
+        "search_depth": "advanced",
+    }
+    try:
+        resp = requests.post("https://api.tavily.com/search", json=payload, timeout=timeout_s)
+    except (requests.RequestException, socket.timeout) as exc:
+        raise WebSearchError(f"Tavily request failed: {exc}") from exc
+    if resp.status_code != 200:
+        raise WebSearchError(f"Tavily returned {resp.status_code}: {resp.text}")
+    try:
+        data = resp.json()
+    except Exception as exc:
+        raise WebSearchError(f"Invalid JSON from Tavily: {resp.text}") from exc
+    results = []
+    for item in data.get("results", [])[:max_results]:
+        title = item.get("title") or ""
+        url = item.get("url") or ""
+        snippet = item.get("content") or item.get("snippet") or ""
+        source = _extract_domain(url)
+        results.append(WebResult(title=title, url=url, snippet=snippet, source=source))
+    return results
+
+
 def search(query: str, max_results: Optional[int] = None, config=None, allowlist: Optional[list[str]] = None, blocklist: Optional[list[str]] = None) -> List[WebResult]:
     cfg = config or load_config()
     web_cfg = cfg.web
     if not web_cfg.enabled:
         raise WebSearchError("Web search is disabled. Enable via WEB_ENABLED=true or web.enabled.")
 
-    provider = (web_cfg.provider or "serpapi").lower()
+    provider = (web_cfg.provider or "tavily").lower()
     max_res = max_results or web_cfg.max_results
     timeout_s = web_cfg.timeout_s
-    env_api_key = os.getenv("WEB_API_KEY")
+    env_api_key = os.getenv("TAVILY_API_KEY") if provider == "tavily" else os.getenv("WEB_API_KEY")
     api_key = env_api_key if env_api_key is not None else web_cfg.api_key
 
-    if provider != "serpapi":
+    if provider == "serpapi":
+        results = _serpapi_search(query, api_key=api_key, max_results=max_res, timeout_s=timeout_s)
+    elif provider == "tavily":
+        results = _tavily_search(query, api_key=api_key, max_results=max_res, timeout_s=timeout_s)
+    else:
         raise WebSearchError(f"Unsupported web provider: {provider}")
-
-    results = _serpapi_search(query, api_key=api_key, max_results=max_res, timeout_s=timeout_s)
     return _filter_results(results, allowlist or [], blocklist or [])
 
 

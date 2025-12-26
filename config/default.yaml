@@ -57,13 +57,20 @@ notes:
     max_tokens: 1200
     target_chars: 10000
     min_chars: 8000
+  web_augmentation_enabled: true
+  max_web_queries_per_notes: 2
+  max_web_results_per_query: 5
+  web_snippet_char_limit: 400
+  web_context_char_limit: 2500
+  web_allow_domains: []
+  web_block_domains: []
 
 web:
-  enabled: false
-  provider: serpapi
+  enabled: true
+  provider: tavily
   api_key: ""
   max_results: 5
   timeout_s: 20
-  min_rag_score_to_skip_web: 0.65
+  min_rag_score_to_skip_web: 0.7
   min_rag_hits_to_skip_web: 3
   max_web_queries_per_question: 2

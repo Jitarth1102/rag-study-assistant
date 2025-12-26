@@ -81,6 +81,13 @@ class NotesGenerationConfig(BaseModel):
 class NotesConfig(BaseModel):
     debug: bool = Field(default=False)
     generation: NotesGenerationConfig = Field(default_factory=NotesGenerationConfig)
+    web_augmentation_enabled: bool = Field(default=True)
+    max_web_queries_per_notes: int = Field(default=2)
+    max_web_results_per_query: int = Field(default=5)
+    web_snippet_char_limit: int = Field(default=400)
+    web_context_char_limit: int = Field(default=2500)
+    web_allow_domains: list[str] = Field(default_factory=list)
+    web_block_domains: list[str] = Field(default_factory=list)
 
 
 class WebConfig(BaseModel):
@@ -189,7 +196,12 @@ def _apply_env_overrides(data: dict) -> dict:
 
 def load_config(path: Optional[Path] = None) -> Settings:
     """Load configuration from YAML and environment variables."""
-    load_dotenv()
+    # Load environment variables from .env.local (preferred) then .env
+    env_local = Path(".env.local")
+    env_default = Path(".env")
+    if env_local.exists():
+        load_dotenv(env_local)
+    load_dotenv(env_default)
     config_path = path or DEFAULT_CONFIG_PATH
     raw = _load_yaml(config_path)
     merged = _apply_env_overrides(raw)

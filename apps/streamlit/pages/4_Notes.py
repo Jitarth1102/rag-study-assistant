@@ -47,6 +47,11 @@ if log_key not in st.session_state:
     st.session_state[log_key] = []
 if st.button("Clear debug log"):
     st.session_state[log_key] = []
+notes_web_key = f"notes_web_aug_{asset_id}"
+allow_notes_web = st.checkbox(
+    "Allow web augmentation for notes", value=st.session_state.get(notes_web_key, True)
+)
+st.session_state[notes_web_key] = allow_notes_web
 col1, col2, col3 = st.columns(3)
 with col1:
     if st.button("Generate Notes", disabled=bool(latest) and not regenerate):
@@ -54,6 +59,7 @@ with col1:
             try:
                 cfg = load_config()
                 cfg.notes.debug = debug_enabled
+                cfg.notes.web_augmentation_enabled = allow_notes_web
                 if debug_enabled:
                     cfg._notes_trace = st.session_state[log_key]
                 res = notes_service.generate_notes_for_asset(subject_id, asset_id, config=cfg, trace=st.session_state[log_key] if debug_enabled else None)
